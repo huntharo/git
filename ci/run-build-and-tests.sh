@@ -35,6 +35,7 @@ linux-feature-testbed)
 	export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
 	export GIT_TEST_NO_WRITE_REV_INDEX=1
 	export GIT_TEST_CHECKOUT_WORKERS=2
+	export GIT_TEST_REFLINK_CHECKOUT=1
 	export GIT_TEST_PACK_USE_BITMAP_BOUNDARY_TRAVERSAL=1
 	;;
 linux-sha256)
@@ -44,8 +45,13 @@ linux-reftable-sha256)
 	export GIT_TEST_DEFAULT_REF_STORAGE_FORMAT=reftable
 	export GIT_TEST_DEFAULT_HASH=sha256
 	;;
-linux-reftable-leaks|osx-reftable)
+linux-reftable-leaks)
 	export GIT_TEST_DEFAULT_REF_STORAGE_FORMAT=reftable
+	;;
+osx-reftable)
+	export GIT_TEST_DEFAULT_REF_STORAGE_FORMAT=reftable
+	# macOS runners use APFS, so this clones for real
+	export GIT_TEST_REFLINK_CHECKOUT=1
 	;;
 esac
 

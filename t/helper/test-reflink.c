@@ -25,10 +25,31 @@
 #include <sys/attr.h>
 #elif defined(__linux__)
 #include <sys/ioctl.h>
-#include <linux/fiemap.h>
-#ifndef FS_IOC_FIEMAP
-#define FS_IOC_FIEMAP _IOWR('f', 11, struct fiemap)
-#endif
+/*
+ * <linux/fiemap.h> is not installed everywhere (e.g. musl systems
+ * without the kernel headers). FIEMAP is part of the stable uapi, so
+ * spell it out. The extents follow the header in the same buffer.
+ */
+struct fiemap_hdr {
+	uint64_t fm_start, fm_length;
+	uint32_t fm_flags, fm_mapped_extents, fm_extent_count, fm_reserved;
+};
+struct fiemap_ext {
+	uint64_t fe_logical, fe_physical, fe_length, fe_reserved64[2];
+	uint32_t fe_flags, fe_reserved[3];
+};
+#define REFLINK_FS_IOC_FIEMAP _IOWR('f', 11, struct fiemap_hdr)
+#define REFLINK_FIEMAP_MAX_OFFSET (~(uint64_t)0)
+#define REFLINK_FIEMAP_FLAG_SYNC 0x00000001
+#define REFLINK_FIEMAP_EXTENT_LAST 0x00000001
+#define REFLINK_FIEMAP_EXTENT_UNKNOWN 0x00000002
+#define REFLINK_FIEMAP_EXTENT_DATA_INLINE 0x00000200
+#define REFLINK_FIEMAP_EXTENT_SHARED 0x00002000
+
+static struct fiemap_ext *fiemap_extents(struct fiemap_hdr *fm)
+{
+	return (struct fiemap_ext *)(fm + 1);
+}
 #endif
 
 static int probe(const char *dir)
@@ -77,15 +98,17 @@ static long long first_block(const char *path)
 	}
 #elif defined(__linux__)
 	{
-		struct fiemap *fm = xcalloc(1, sizeof(*fm) +
-					    sizeof(struct fiemap_extent));
+		struct fiemap_hdr *fm = xcalloc(1, sizeof(*fm) +
+						sizeof(struct fiemap_ext));
+		struct fiemap_ext *e = fiemap_extents(fm);
+
 		fm->fm_length = 1;
-		fm->fm_flags = FIEMAP_FLAG_SYNC;
+		fm->fm_flags = REFLINK_FIEMAP_FLAG_SYNC;
 		fm->fm_extent_count = 1;
-		if (!ioctl(fd, FS_IOC_FIEMAP, fm) && fm->fm_mapped_extents &&
-		    !(fm->fm_extents[0].fe_flags & (FIEMAP_EXTENT_UNKNOWN |
-						    FIEMAP_EXTENT_DATA_INLINE)))
-			ret = fm->fm_extents[0].fe_physical;
+		if (!ioctl(fd, REFLINK_FS_IOC_FIEMAP, fm) && fm->fm_mapped_extents &&
+		    !(e->fe_flags & (REFLINK_FIEMAP_EXTENT_UNKNOWN |
+				     REFLINK_FIEMAP_EXTENT_DATA_INLINE)))
+			ret = e->fe_physical;
 		free(fm);
 	}
 #endif
@@ -132,21 +155,21 @@ static int file_usage(const char *path, struct usage_totals *t)
 		int fd = open(path, O_RDONLY);
 		uint64_t start = 0, private_bytes = 0;
 		int last = 0;
-		struct fiemap *fm;
+		struct fiemap_hdr *fm;
 
 		if (fd < 0)
 			return error_errno("open(%s)", path);
-		fm = xmalloc(sizeof(*fm) + 64 * sizeof(struct fiemap_extent));
+		fm = xmalloc(sizeof(*fm) + 64 * sizeof(struct fiemap_ext));
 
 		while (!last) {
 			uint32_t i;
 
 			memset(fm, 0, sizeof(*fm));
 			fm->fm_start = start;
-			fm->fm_length = FIEMAP_MAX_OFFSET - start;
-			fm->fm_flags = FIEMAP_FLAG_SYNC;
+			fm->fm_length = REFLINK_FIEMAP_MAX_OFFSET - start;
+			fm->fm_flags = REFLINK_FIEMAP_FLAG_SYNC;
 			fm->fm_extent_count = 64;
-			if (ioctl(fd, FS_IOC_FIEMAP, fm)) {
+			if (ioctl(fd, REFLINK_FS_IOC_FIEMAP, fm)) {
 				free(fm);
 				close(fd);
 				return error_errno("FIEMAP(%s)", path);
@@ -154,11 +177,11 @@ static int file_usage(const char *path, struct usage_totals *t)
 			if (!fm->fm_mapped_extents)
 				break;
 			for (i = 0; i < fm->fm_mapped_extents; i++) {
-				struct fiemap_extent *e = &fm->fm_extents[i];
-				if (!(e->fe_flags & FIEMAP_EXTENT_SHARED))
+				struct fiemap_ext *e = &fiemap_extents(fm)[i];
+				if (!(e->fe_flags & REFLINK_FIEMAP_EXTENT_SHARED))
 					private_bytes += e->fe_length;
 				start = e->fe_logical + e->fe_length;
-				if (e->fe_flags & FIEMAP_EXTENT_LAST)
+				if (e->fe_flags & REFLINK_FIEMAP_EXTENT_LAST)
 					last = 1;
 			}
 		}
