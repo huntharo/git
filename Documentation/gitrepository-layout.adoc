@@ -296,6 +296,15 @@ worktrees/<id>/locked::
 	or manually by `git worktree prune`. The file may contain a string
 	explaining why the repository is locked.
 
+worktrees/<id>/reflink-source::
+	If this file exists, checkouts in the linked working tree create
+	unchanged files as copy-on-write clones (see `checkout.reflink` in
+	linkgit:git-config[1]). It is written by `git worktree add
+	--reflink` and names the worktree to clone from: `.` for the main
+	worktree, `worktrees/<id>` for a linked one, or nothing for the
+	default. The main worktree may have a `reflink-source` file in
+	`$GIT_DIR` too.
+
 worktrees/<id>/config.worktree::
 	Working directory specific configuration file.
 
