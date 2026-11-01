@@ -1608,6 +1608,13 @@ static struct stream_filter null_filter_singleton = {
 	.vtbl = &null_vtbl,
 };
 
+int convert_to_working_tree_is_noop_ca(const struct conv_attrs *ca)
+{
+	if (ca->drv || ca->working_tree_encoding || ca->ident)
+		return 0;
+	return output_eol(ca->crlf_action) != EOL_CRLF;
+}
+
 int is_null_stream_filter(struct stream_filter *filter)
 {
 	return filter == &null_filter_singleton;
