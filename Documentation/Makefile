@@ -134,6 +134,7 @@ TECH_DOCS += technical/parallel-checkout
 TECH_DOCS += technical/partial-clone
 TECH_DOCS += technical/platform-support
 TECH_DOCS += technical/racy-git
+TECH_DOCS += technical/reflink-checkout
 TECH_DOCS += technical/reftable
 TECH_DOCS += technical/remembering-renames
 TECH_DOCS += technical/repository-version

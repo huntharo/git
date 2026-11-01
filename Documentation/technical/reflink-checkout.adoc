@@ -1,0 +1,609 @@
+Reflink Checkout Design Notes
+=============================
+
+"Reflink checkout" lets checkout create a working tree file as a
+copy-on-write clone of the same file in another worktree of the same
+repository, instead of writing it out from the object store. The two
+files share data blocks on disk until one of them is modified. The goal
+is to make hundreds of worktrees of a large repository cheap in disk
+space, and cheaper in time where the filesystem makes cloning cheaper
+than writing.
+
+Cloning is decided per path inside the code that writes working tree
+files, so every command that checks out files (`worktree add`,
+`checkout`, `switch`, `reset`, `restore`, `merge`, `rebase`, `pull`,
+`checkout-index`, `sparse-checkout` ...) uses it, and a worktree keeps
+sharing as it moves between branches.
+
+This work started from Jason Newton's "worktree add --reflink" series
+(git/git#2317), which reflinked the whole source tree and then ran `git
+reset --hard`. Review of that series asked for per-path cloning inside
+checkout; that is what this design does. The `FICLONE`/`clonefile()`
+primitive and the Windows analysis come from that series.
+
+
+The contract
+------------
+
+A file created by reflink checkout must be indistinguishable from the
+file an ordinary checkout would have written, except that its data
+blocks are shared:
+
+* same path, bytes, file type and executable bit;
+* permission bits from the umask, owned by the user running Git, fresh
+  modification, change and (on macOS) creation times, so build tools see
+  the file as new exactly as after an ordinary checkout, and no extended
+  attributes inherited from the donor;
+* the index entry gets its stat data from the new file, so racy-git
+  rules apply unchanged;
+* attributes, filters, hooks, sparse-checkout, submodules, progress
+  output, "Updated N paths" counts and error messages are unaffected;
+* untracked and ignored files of the reflink source never appear in the
+  new worktree;
+* uncommitted changes of the reflink source never appear in the new
+  worktree, whether or not its index has noticed them.
+
+The only things allowed to differ are the physical block layout and, on
+macOS, the value of the kernel-managed `com.apple.provenance` attribute
+(see "The clone primitive").
+
+If anything prevents cloning a file -- no reflink source, the source
+does not hold that blob, the source's copy is modified, a conversion
+applies, the filesystem cannot clone, verification fails -- the file is
+written the ordinary way. Nothing is reported to the user (trace2
+category `reflink` records what happened) and the outcome is the same as
+without reflink checkout.
+
+
+Terms
+-----
+
+reflink source::
+	The worktree a worktree clones files from. Each worktree has at most
+	one; by default the main worktree.
+
+donor::
+	For one path being checked out, the file at the same path in the
+	reflink source.
+
+
+Where the clone happens
+-----------------------
+
+All checkout writes of tracked files go through `checkout_entry_ca()` in
+`entry.c`. It removes whatever is in the way, creates leading
+directories, and then writes the file either itself (`write_entry()`) or
+by queueing it for parallel checkout, whose workers write it in
+`write_pc_item()`. Reflink checkout hooks into exactly those two places,
+right where the file would be created:
+
+----
+checkout_entry_ca()
+  ...unlink old file, create_directories()...
+  enqueue_checkout()  -->  worker: write_pc_item()
+                                     reflink_checkout_entry()   <-- here
+                                     else open() + write()
+  reflink_checkout_entry()                                       <-- here
+  else write_entry()
+----
+
+`reflink_checkout_entry()` (`reflink-checkout.c`) either leaves a
+verified clone at the path and returns its `struct stat`, which the
+caller feeds to `update_ce_after_write()` like any other written file,
+or returns -1 having left nothing at the path, in which case the caller
+carries on exactly as before. Hooking in after `enqueue_checkout()`
+keeps parallel checkout's behaviour (number of workers, collision
+detection, progress) and makes the workers clone and verify in
+parallel.
+
+An entry is considered only when:
+
+* it is a regular file (symlinks and gitlinks are written as usual);
+* `convert_to_working_tree_is_noop_ca()` says checkout would write the
+  blob's bytes unchanged: no filter driver (smudge, process or LFS), no
+  `working-tree-encoding`, no `ident`, and no LF-to-CRLF output. In
+  particular `text=auto` and `eol=lf` files *are* eligible, since
+  checkout writes them byte for byte. (Out-of-tree experiments that
+  skipped every file with a text attribute shared 0 of 434 files in a
+  repository with `* text=auto eol=lf`.)
+* it is not a temporary file (`checkout-index --temp`, merge tools).
+
+
+Phase one: choosing a donor
+---------------------------
+
+The reflink source's index is read once per process, lazily, the first
+time an entry is eligible. It is read with `read_index_from_flags()`
+and the flags
+
+`READ_INDEX_GENTLY`::
+	Return -1, silently, instead of dying on a missing or unreadable
+	file, bad header, version or checksum (which is always verified in
+	this mode, unlike for our own index), an entry that does not parse
+	or an implausible entry count, an extension we do not understand, or
+	a missing or mismatched shared index. Only the extensions needed to
+	know the entries (split index link, sparse directories) are parsed,
+	and no threads are used. A reflink source whose index we cannot read
+	means only that nothing is cloned.
+
+`READ_INDEX_RAW`::
+	Read it as it is on disk: do not adjust its sparsity to our
+	settings (no expansion, no advice), and do not touch its untracked
+	cache, split index or fsmonitor state, nor freshen its shared index.
+
+For entry `ce`, the donor is used if:
+
+* the reflink source's index has a stage-0 regular-file entry at that
+  path with the same object ID as `ce`, not skip-worktree or
+  intent-to-add (`index_name_pos_sparse()`, so a sparse index is not
+  expanded);
+* the blob is not empty (creating an empty file is cheaper);
+* the donor, opened with `O_NOFOLLOW | O_NONBLOCK`, is a regular file
+  whose `fstat()` matches the stat data in the reflink source's index
+  (`match_stat_data()`, honouring `core.checkStat` and
+  `core.trustCtime`).
+
+A file the reflink source's index knows to be modified, or one edited
+without `git status` or `git update-index` having run (its stat data no
+longer matches), is therefore never cloned; checkout writes it from the
+object store. The donor stays open, and the clone is made from that
+descriptor, so the file that was checked is the file that is cloned: it
+cannot be swapped for a directory, FIFO or symlink in between.
+
+Phase one is a filter that avoids pointless clones. Correctness comes
+from phase two.
+
+
+Phase two: verifying the clone
+------------------------------
+
+Stat data that matches does not prove the donor's bytes are the blob:
+
+* the donor may be modified between phase one and the clone, including
+  through a shared mmap, which does not update its timestamps;
+* "clean" in the donor's index means "converts to the blob", not "equals
+  the blob": a CRLF file in a `text=auto` worktree, a file that went
+  through a clean filter, an `ident` file, or a file whose
+  working-tree-encoding has the same width (EBCDIC) is clean although
+  its bytes differ from the blob;
+* the reflink source may have been checked out with other attributes or
+  configuration.
+
+So every clone is read back and hashed as a blob (`"blob <size>\0"` +
+bytes, with the repository's hash function) through the descriptor that
+created it. The clone is used only if the result equals the object ID
+being checked out; otherwise it is unlinked and the file written the
+ordinary way. This proves that the new file is byte for byte what
+checkout would have written, whatever happened to the donor and
+whatever conversion it went through. The non-collision-detecting
+implementation of the hash is used: this is a second-preimage check
+against an object we already have, so collision detection buys nothing.
+
+Alternative considered: trusting the donor's index
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The alternative to reading the clone back is to trust the reflink
+source's index, rechecked around the clone: the donor's stat data must
+match its index entry and not be racily clean, its size must equal the
+blob's size (ruling out CRLF and `ident`), and its inode, size, mtime
+and ctime must be unchanged after the clone. This is Git's usual stat
+trust model, and it avoids reading every cloned file. It was implemented
+and benchmarked (see "Measurements"), and rejected:
+
+* a file modified through a shared mmap keeps its timestamps; an early
+  prototype reproduced such an edit leaking into a new worktree, where
+  the recipient's index then recorded it as clean, so a later `commit
+  -a` would commit it;
+* same-width working-tree encodings and size-preserving clean filters
+  defeat the size check;
+* with `core.checkStat=minimal` an edit that restores the mtime passes.
+
+Git trusts stat data to decide whether *this* worktree changed. Reflink
+checkout would be trusting it to decide what to put into *another*
+worktree, and a wrong answer there is silent data corruption, not a
+missed `git status` entry. The contract requires the stronger check.
+
+
+The clone primitive
+-------------------
+
+`clone_fd_to_file()` in `copy.c` clones the regular file open on a
+descriptor to a new path:
+
+Linux::
+	`open(dst, O_CREAT|O_EXCL, mode)` exactly as checkout does, then
+	`ioctl(FICLONE)` from the source descriptor. The new file's mode,
+	owner, security label and timestamps are those of a new file; only
+	the data is shared. Only btrfs, XFS (reflink=1, the default),
+	bcachefs and overlayfs are allowed (by `fstatfs()` magic number).
+	CIFS/SMB3 implements `FICLONE` with the
+	`FSCTL_DUPLICATE_EXTENTS_TO_FILE` call that is rejected for Windows
+	below; NFS and ZFS are left out until someone vouches for them.
+
+macOS::
+	Only on APFS. The source must have no BSD flags (immutable,
+	compressed, dataless, ...). `fclonefileat(fd, AT_FDCWD, dst,
+	CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)` copies the source's mode,
+	timestamps (including the creation time) and extended attributes
+	(but not ACLs), so the clone is then fixed up through a descriptor:
+	`fchmod()` to the mode checkout would create (`0666`/`0777` minus
+	umask), every extended attribute except `com.apple.provenance` is
+	removed (notably `com.apple.quarantine`), and the creation,
+	modification and access times are set to the current time. Inherited
+	ACLs and directory group ownership match an ordinarily created file.
+
+`com.apple.provenance` is attached by the kernel to every file a
+provenance-tracked process creates, so an ordinarily written file
+carries one too; only its value may differ, and it cannot be changed by
+an unprivileged process. Nothing in Git or common build tools reads it.
+
+Other platforms::
+	`ENOSYS`, and reflink checkout does nothing at all.
+
+On failure `clone_fd_to_file()` leaves nothing at the destination.
+Errors that mean "these two paths can never be cloned" (`EXDEV`,
+`ENOTSUP`/`EOPNOTSUPP`, `ENOSYS`, `ENOTTY`), or 16 failures without a
+single success, mark the reflink source unusable for the rest of the
+process. Before reading the reflink source's index at all, the reflink
+source must be on the same filesystem (`st_dev`) as the current worktree
+and on one of the filesystems above, so a worktree on another
+filesystem, or a repository on ext4 with `checkout.reflink=true`, costs
+two `stat()` calls per process.
+
+Worktrees of other users
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Users who share a repository (`core.sharedRepository`, `safe.directory`)
+can add worktrees of each other's. Cloning needs nothing beyond that:
+
+* a donor is opened read-only as the user running Git, so a file that
+  user may not read is skipped (counted `source-dirty`, no clone
+  attempted) and written from the object database as usual; a reflink
+  source whose directory that user may not open is not used at all;
+* the clone belongs to the user running Git, with the group, mode,
+  inherited ACLs and security label a newly created file gets in that
+  directory; the donor's owner, group, mode and ACLs never carry over
+  (tested in t2410, and with two real users on XFS and btrfs);
+* data blocks are shared, but copy-on-write means neither user's later
+  writes are visible to the other, and verification means a donor that
+  is modified in any way is never cloned as the blob.
+
+Sharing blocks across users may affect quota accounting: depending on
+the filesystem, each owner may be charged for the full size of a shared
+file.
+
+
+Windows
+~~~~~~~
+
+Windows is off. ReFS and Dev Drive support block cloning through
+`FSCTL_DUPLICATE_EXTENTS_TO_FILE`, but git-lfs#6312 documents that it can
+clone stale on-disk clusters when the source's data is still dirty in
+the cache, producing zero-filled files; flushing the source through a
+writable handle first avoids it. Content verification would catch zeros
+that are visible right after the clone, but the reports disagree on
+whether the bad data shows immediately or comes and goes later, no fixed
+Windows build is identified, and we cannot test ReFS in CI. Until that
+changes, `clone_fd_to_file()` returns `ENOSYS` on Windows.
+
+
+Reflink sources
+---------------
+
+The reflink source is resolved once per process:
+
+1. `$GIT_DIR/reflink-source` of the current worktree, if it names a
+   worktree: `.` for the main worktree, `worktrees/<id>` for a linked
+   one. `git worktree add --reflink-source=<worktree>` writes it.
+   Naming the administrative directory rather than the path means `git
+   worktree move` of the reflink source is followed automatically.
+2. `checkout.reflinkSource`, a worktree name or path as accepted by
+   `git worktree move`.
+3. The main worktree.
+
+The first candidate that exists, has a working tree on disk and is not
+the current worktree is used: a reflink source that was deleted or
+pruned, is bare, or is the current worktree itself is skipped in favour
+of the next. If the one chosen is on another or unsupported filesystem,
+there is no reflink source. A reused
+`worktrees/<id>` is harmless: the worst case is cloning from an
+unrelated worktree, and phase two rejects anything that is not the
+right blob.
+
+Reflink checkout is on for a worktree when:
+
+* `GIT_TEST_REFLINK_CHECKOUT` says so (see "Testing"), else
+* `checkout.reflink` is set: `false` turns it off everywhere, including
+  in worktrees created with `--reflink` (a kill switch); `true` turns it
+  on for every worktree in its scope; else
+* the worktree has a `$GIT_DIR/reflink-source` file. `git worktree add
+  --reflink` writes one (empty, meaning the default reflink source), so
+  the new worktree keeps cloning on later checkouts without any
+  configuration.
+
+`git worktree add --reflink` and `--no-reflink` run the initial checkout
+with `checkout.reflink` set accordingly, so the command line wins over
+configuration inherited from elsewhere; `--reflink` warns if
+`checkout.reflink=false` will disable later checkouts. When the main
+worktree is bare (the usual layout for a pool of worktrees) and
+`checkout.reflinkSource` is not set, `--reflink` records the worktree it
+is run from as the reflink source, and warns that there is none if run
+from the bare repository. A value of `checkout.reflink` that is not a
+boolean disables cloning with a warning rather than dying halfway
+through a checkout.
+
+Advice for many worktrees: keep reflink-source worktrees on their branch
+(for example a long-lived `1.0` worktree serving as the reflink source
+for all 1.0 work, given with `--reflink-source`), and do not switch them
+to a very different branch, because recipients only share files whose
+content the reflink source currently has. Developing in a recipient is
+fine and only reduces sharing for the files it changes.
+
+When a reflink source changes branch, the files it rewrites get new
+blocks; existing recipients keep sharing the old blocks among
+themselves, and later checkouts clone the new content. When a reflink
+source goes away, recipients keep their data (the filesystem keeps
+shared blocks alive) and later checkouts use the next reflink source in
+the list above. None of this affects any file's content, only how much
+is shared.
+
+
+Preserving sharing across operations
+------------------------------------
+
+Because cloning is decided per file at write time, every operation that
+writes tracked files asks the same question: "does my reflink source
+hold this exact blob, unmodified?" Switching to another branch and back,
+`reset --hard`, `rebase`, `merge`/`pull` fast-forwards, `restore` and
+`checkout -- <path>` all clone files the reflink source has. A file
+whose content is new (a merge result, a commit made in this worktree,
+`git apply`) is written as usual. `fetch` does not touch the working
+tree.
+
+A file checkout does not rewrite keeps whatever sharing it had: reflink
+checkout never rewrites a file just to share it. (A future `git worktree
+reshare` could do that for files whose stat data says they are clean.)
+
+Versions of Git without reflink checkout work in a reflinked worktree
+as in any other: they ignore `checkout.reflink` and the `reflink-source`
+file, and a clone is an ordinary file to them. Each file they write is a
+private copy. A later checkout by a reflink-aware Git clones the files
+it writes again, but leaves alone those it does not need to write, even
+when the reflink source holds the same content. In aws-cdk (macOS,
+14,469 files, 1.1 GB): a reflinked worktree taken by an unaware Git 100
+commits back and forward again kept 831 files (98 MB) private; taking it
+150 commits back left 1,301 private files, and a reflink-aware switch
+forward again wrote 1,096 files, all cloned, after which nothing was
+private.
+
+
+Interaction with other features
+-------------------------------
+
+sparse-checkout::
+	Skip-worktree entries are not written, so there is nothing to do. If
+	the reflink source is sparse, paths outside its cone are not in its
+	index as files (or are skip-worktree), so they are written normally.
+	Its sparse index is not expanded.
+
+submodules::
+	Gitlinks are never cloned. Submodule contents are checked out by a
+	child process in the submodule's repository, which resolves its own
+	reflink source; submodules of different superproject worktrees are
+	separate repositories, so in practice they are not shared.
+
+filters, LFS::
+	Any filter driver makes an entry ineligible, LFS included. Cloning
+	smudged output would need the donor verified against what the smudge
+	filter would produce, which means running the filter; left for
+	later.
+
+eol, ident, working-tree-encoding::
+	Only conversions that change the bytes make an entry ineligible:
+	`ident`, `working-tree-encoding`, and LF-to-CRLF output (`eol=crlf`,
+	`core.autocrlf=true`, `core.eol=crlf`). LF output, `text=auto` and
+	binary files are eligible. A donor with CRLF endings whose blob has
+	LF is rejected by verification.
+
+core.fsmonitor, untracked cache::
+	A cloned file is a newly written file to the recipient's index:
+	`update_ce_after_write()` marks it fsmonitor-invalid and the
+	untracked cache is invalidated exactly as for an ordinary write. The
+	reflink source's fsmonitor state is not used (its files are
+	`fstat()`ed) and its fsmonitor is never queried or started.
+
+split index::
+	The reflink source's index is read with its own git directory, so
+	its shared index is found; a missing shared index means no clones.
+	The recipient's index is written as usual.
+
+parallel checkout::
+	Workers attempt the clone themselves, each reading the reflink
+	source's index once. Path collisions are handled by the existing
+	logic, because the clone fails with `EEXIST` exactly where
+	`open(O_EXCL)` would.
+
+case-insensitive filesystems, symlinked leading directories::
+	The clone is created at the same path, after the same checks, with
+	the same exclusive-create semantics, so collision and symlink
+	handling are unchanged.
+
+
+Testing
+-------
+
+`GIT_TEST_REFLINK_CHECKOUT=1` forces reflink checkout on, like the other
+`GIT_TEST_*` knobs. In this mode, an eligible file without a real donor
+is still cloned: the blob is streamed to a scratch file in `$GIT_DIR`
+that is deliberately unlike a checkout result (mode 0700, timestamps in
+2001, an extra extended attribute on macOS), the scratch file is
+unlinked, and the destination is cloned from its descriptor, fixed up
+and verified. So every eligible file written anywhere in the test suite
+goes through cloning, fix-ups and verification, and the suite must pass
+unchanged. `GIT_TEST_REFLINK_CHECKOUT=corrupt` always clones from a
+scratch donor with one byte too many, so every clone must fail
+verification and fall back; the suite must pass unchanged in that mode
+too. `GIT_TEST_REFLINK_CHECKOUT=0` forces it off. CI sets
+`GIT_TEST_REFLINK_CHECKOUT=1` in `osx-reftable` (APFS, real clones) and
+in `linux-feature-testbed` (ext4, so the fallback path).
+
+`GIT_TEST_REFLINK_TAMPER=<path>[:replace]` modifies (or replaces with a
+directory) the donor of `<path>` between phase one and the clone, to
+test races deterministically.
+
+`test-tool reflink` reports whether two files share their first block
+(`F_LOG2PHYS_EXT` on APFS, `FIEMAP` on Linux), whether a directory
+supports cloning, and the private (unshared) bytes of a set of files
+(`ATTR_CMNEXT_PRIVATESIZE` on APFS, `FIEMAP_EXTENT_SHARED` on Linux), so
+tests assert actual sharing rather than trusting counters. trace2
+counters in the `reflink` category (`cloned`, `no-donor`,
+`source-dirty`, `clone-failed`, `verify-failed`, `scratch-donor`) and the
+data key `source` record what happened.
+
+`t2410` to `t2413` cover the contract, reflink sources and their
+lifecycle, operations that must keep sharing, and attributes, filters,
+sparse checkout, submodules and fallbacks.
+
+
+Measurements
+------------
+
+`git worktree add --detach` of aws-cdk, normal (`checkout.reflink=false`)
+against reflink (`checkout.reflink=true`), with the main worktree as the
+reflink source; `git status` was clean after every run. Private bytes
+are bytes stored only for the new worktree (`test-tool reflink
+private-bytes`).
+
+Linux, 8 vCPUs, XFS on a loop device, aws-cdk at 29,529 files and
+1.58 GB, page cache dropped before each run, median of 3:
+
+[options="header"]
+|===
+| build | workers | normal | reflink | reflink without verification (measurement only)
+| default (SHA-1DC)            | 1 | 2.00 s | 5.96 s | 2.00 s
+| default (SHA-1DC)            | 8 | 0.84 s | 1.74 s | 0.88 s
+| `OPENSSL_SHA1_UNSAFE`        | 1 | 2.02 s | 3.96 s |
+| `OPENSSL_SHA1_UNSAFE`        | 8 | 0.86 s | 1.28 s |
+| `OPENSSL_SHA1_UNSAFE`, warm  | 1 | 2.15 s | 3.57 s | 1.58 s
+| `OPENSSL_SHA1_UNSAFE`, warm  | 8 | 0.82 s | 1.07 s | 0.81 s
+|===
+
+Private bytes: 1,576,419,328 normal, 0 reflink (all 29,529 files share
+all their blocks).
+
+macOS, APFS, aws-cdk at 14,526 files and 1.16 GB, on a machine shared
+with other jobs (load average 16 to 60, so expect wide variance; the
+same `worktree add` takes 2.6 s on an idle machine), range of 3 runs:
+
+[options="header"]
+|===
+| build | workers | normal | reflink
+| `APPLE_COMMON_CRYPTO_SHA1_UNSAFE` | 1 | 3.0 - 4.9 s | 5.0 - 9.4 s
+| `APPLE_COMMON_CRYPTO_SHA1_UNSAFE` | 8 | 1.7 - 2.8 s | 1.8 - 2.8 s
+| default (SHA-1DC)                 | 1 |             | 9.8 - 21 s
+| default (SHA-1DC)                 | 8 |             | 2.9 - 6.2 s
+|===
+
+Private bytes: 1,159,319,552 normal, 0 reflink. In a micro-benchmark on
+the same machine, `clonefile()` of a 30 KB file cost about as much as
+writing it (190 against 210 microseconds), and reading the fresh clone
+back about 180 microseconds (35 when cached).
+
+The trust-the-index alternative (see "Phase two") took 3.2 - 5.6 s
+against 6.0 - 9.3 s normal and 8.5 - 14.2 s verified in the same loaded
+macOS runs (default build, one worker); it was rejected for correctness,
+not speed.
+
+Conclusions:
+
+* Space: every unchanged file is shared; a worktree costs only the files
+  it changes.
+* Time: cloning itself is about as fast as writing. Verification reads
+  and hashes every byte, which makes a sequential checkout up to twice
+  as slow; parallel checkout (`checkout.workers`) hides most of it.
+  Verification speed depends on the build's non-collision-detecting
+  SHA-1: builds should set `OPENSSL_SHA1_UNSAFE` (Linux) or
+  `APPLE_COMMON_CRYPTO_SHA1_UNSAFE` (macOS); the default falls back to
+  the collision-detecting implementation, roughly halving throughput.
+
+
+Review of git/git#2317, and answers
+-----------------------------------
+
+Each question raised on the list about #2317, with the answer this
+design gives.
+
+brian m. carlson, v1: Windows has copy-on-write on ReFS, and Git LFS has code for it.::
+	Yes, but it is unsafe as shipped (git-lfs#6312, raised by brian
+	himself on v3). Windows is off; see "Windows".
+
+brian m. carlson, v1: if worktree A is dirty but neither `git update-index` nor `git status` has run, does B get stale files? How would we detect it?::
+	No. Phase one compares a fresh `fstat()` of A's file with A's index
+	entry: an edit A's index has not noticed changes the stat data, so
+	the file is not cloned. Phase two hashes every clone and rejects
+	anything that is not the blob being checked out, which also covers
+	edits that keep the stat data (mmap, timestamp-restoring tools) and
+	edits racing with the checkout. B only ever gets the committed
+	content.
+
+brian m. carlson, v1: two worktrees on one branch, A commits, then B: B would revert A's changes.::
+	Not part of this design. Reflink checkout does not change which
+	branches can be checked out where.
+
+brian m. carlson, v1: many refs to one commit, created in one `update-ref` transaction, would avoid shared-branch checkouts.::
+	Agreed, and orthogonal: reflink checkout works with any branch or
+	detached HEAD.
+
+Junio C Hamano, v1: is CoW only a space optimisation, or does it limit features or add runtime cost at clone time or first modification?::
+	It is invisible to everything but the block layout on APFS, btrfs
+	and XFS: either copy can be edited, renamed or deleted
+	independently. The costs are a clone call per file, which on APFS is
+	not cheaper than writing a small file, the verification read, and a
+	block-sized copy on the first write to a shared block (APFS and XFS
+	copy only the blocks written). See "Measurements".
+
+Junio C Hamano, v1: why opt-in? Materialising a_hash at a_path should just clone an existing path with a_hash when CoW is available, otherwise write the object.::
+	This design is exactly that, per path, in `checkout_entry_ca()`. It
+	is opt-in (`checkout.reflink`, `git worktree add --reflink`) in this
+	first version because: (1) deciding *which* existing path is a
+	trustworthy source of a_hash is new policy (the reflink source),
+	and a wrong choice costs only sharing, but users with one worktree
+	gain nothing; (2) verification reads every cloned file, so where
+	cloning is not cheaper than writing (small files on APFS) it trades
+	time for space; (3) it needs field experience before being on by
+	default. Making `checkout.reflink` default to on where supported is
+	a one-line change once that experience exists.
+
+Junio C Hamano, v1: "a branch can only be checked out in one worktree" is a safety feature unrelated to sharing files.::
+	Agreed; untouched.
+
+qub1n (Git for Windows PR 6467): cloning every file made `git worktree add` slower; cloning only files above about 160 KiB kept it as fast while saving space.::
+	That measurement was on ReFS, where cloning is off. On APFS and XFS
+	see "Measurements". There is no size threshold: with verification,
+	small files cost about as much to clone as to write, and every
+	cloned file saves at least a block. A threshold could be added if
+	measurements on some filesystem call for it.
+
+Eric Sunshine, v3: still not clear why `--reflink` must be opt-in rather than the default for tracked files (Junio's a_hash at a_path).::
+	See the answer to Junio above. `--reflink` is now only a convenience
+	that records a reflink source for the new worktree; the mechanism
+	is `checkout.reflink`, which applies to every checkout.
+
+brian m. carlson, v3: ReFS block cloning is defective; do not implement it on Windows.::
+	Agreed; off on Windows, and on Linux CIFS/SMB3, which uses the same
+	call.
+
+brian m. carlson, v3: only enable it where it has been tested manually or is tested in CI, including APFS on macOS.::
+	It is enabled only on APFS and on btrfs, XFS, bcachefs and overlayfs
+	on Linux. The whole test suite has been run with
+	`GIT_TEST_REFLINK_CHECKOUT=1` and `=corrupt` on APFS (macOS) and on
+	XFS (Linux), and CI runs it on the macOS `osx-reftable` job.
+
+brian m. carlson, v3: the `REFLINK` prerequisite used `cp --reflink=always`, which macOS `cp` lacks, so the test silently does not run there.::
+	The prerequisite is now `test-tool reflink probe .`, which uses the
+	same `clone_fd_to_file()` as Git itself, and sharing is asserted
+	with `test-tool reflink shared`, so tests cannot pass vacuously
+	where cloning works.
+
+Eric Sunshine, v3: why ephemeral branches, when `git worktree add --detach` exists; deleting branches by default would break tooling.::
+	Not part of this design; the ephemeral-branch patch was dropped.
