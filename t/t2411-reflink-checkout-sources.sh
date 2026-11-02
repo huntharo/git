@@ -851,6 +851,7 @@ test_expect_success NODATACOW 'cloning is given up after 16 failures in a row' '
 		git add . &&
 		git commit -q -m many
 	) &&
+	reflink_stable_source many &&
 	mkdir ndc &&
 	chattr +C ndc &&
 	rm -f trace.json &&
