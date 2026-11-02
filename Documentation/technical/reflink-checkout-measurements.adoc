@@ -1,0 +1,372 @@
+Reflink stat-cache draft: measurements and correctness evidence
+==============================================================
+
+This is a design experiment, with a demonstrated correctness difference
+from ordinary worktree creation. Passing the test suites does not establish
+that stat-clean donors contain the requested blob. The APFS mmap experiment
+below produces incorrect initial checkout bytes with an apparently clean
+index. This draft is not evidence that removing verification preserves
+PR #1's identical-checkout guarantee.
+
+Revision and build controls
+--------------------------
+
+The starting live head of https://github.com/huntharo/git/pull/1 was
+67675599f52e2d35bc55b9fcd8ec3cdd0e1c2bdd, against master at
+50fe5cc63f9cd6e89b87a2c9ccf96a444f4cfdb7. This branch started there in a
+separate worktree. PR #1 and its branch were not modified by this work.
+The implementation is commit 3bddd57ca2, followed by measurement/report
+and test-fixture updates. The production C source is unchanged by those
+follow-ups.
+
+PR #1 subsequently advanced to e590842f2eb441bc30ba98b33e23f96d5685610f.
+The measurements use the pinned starting head, not that later revision.
+The later revision includes filesystem-ID/subvolume eligibility changes;
+cross-subvolume support from that revision is not part of this alternative.
+
+Four separate builds per platform retain primary SHA1_DC. The default
+build has no fast secondary SHA-1 implementation; the fast build adds
+APPLE_COMMON_CRYPTO_SHA1_UNSAFE=1 on macOS or OPENSSL_SHA1_UNSAFE=1 on
+Linux. These are secondary-hasher comparisons, not replacement of Git's
+normal object-integrity protections. Original and alternative builds use
+identical settings within each cell.
+
+* Common: NO_RUST=1 NO_GETTEXT=1 NO_TCLTK=1; default -g -O2.
+* macOS: NO_HOMEBREW=1 NO_DARWIN_PORTS=1
+  CURL_CONFIG=/usr/bin/curl-config; system libcurl 8.7.1, zlib 1.2.12.
+* Linux timing builds: Ubuntu 24.04 arm64, OpenSSL 3.0.13,
+  libcurl 8.5.0, zlib 1.3; NO_OPENSSL is not set.
+* Linux correctness build additionally uses NO_OPENSSL=1.
+
+APFS runs use the local Mac M5 Max, 18 logical CPUs and 64 GB RAM,
+macOS 27.0.1. Linux runs use a privileged Ubuntu container inside the
+same host's Docker Linux VM (Linux 7.0.14-linuxkit), limited to four
+vCPUs and 6 GB RAM. Eight checkout workers therefore oversubscribe the
+Linux CPU quota. XFS and btrfs are separate 6 GiB sparse loopback images
+on that VM's backing disk; XFS was formatted with reflink=1. This is real
+Linux filesystem testing, not a native-disk or independent-cloud-machine
+storage benchmark. Absolute cross-platform times should not be compared.
+
+Timing matrices run sequentially without this task's test/build jobs
+competing with them. Host activity is not globally controlled. Caches are
+warm and no global cache purge is performed. Results include observed
+variation rather than an inference of statistical significance.
+
+Benchmark binaries were built before the implementation commit and can
+report the starting revision with a .dirty suffix. The script records
+source SHA-256, complete GIT-CFLAGS/GIT-LDFLAGS, and version output in
+the raw JSON to distinguish them. Source fingerprints are:
+
+[cols="1,3",options="header"]
+|===
+|Implementation |SHA-256 of reflink-checkout.c
+|original |2e803d5eed1280192b22fec7f372f205540ad517c7f06df5f20183347cf865ff
+|alternative |ed3719145e68aaf17c9c5b64e49a1e865e6c2b7bf360c5790a875fb08f109c94
+|===
+
+Fixture and protocol
+--------------------
+
+The fixture is aws-cdk at 49839b28410f476646e2b60fe9fc5a570a540905:
+14,541 tracked paths, 14,526 regular files, 14,469 nonempty regular
+files and 15 symlinks. Fixture objects and source/recipient data are local
+to the tested filesystem. Donor mtimes age naturally, and ordinary
+update-index --refresh --force-write-index writes a real stat cache.
+No donor stat information is fabricated.
+
+contrib/reflink/benchmark.py measures worktree add --detach with either
+--no-reflink or --reflink, checkout.workers=1 or 8, and parallel threshold
+100. It uses each build's git executable directly, with explicit exec
+and template paths, disabled global/system config and attributes, and
+hooks disabled. Generated wrappers must point at the correct build;
+copied wrappers were regenerated before secondary-build correctness tests.
+
+Each of the 16 cells gets one excluded warm-up, then five repetitions,
+interleaved in a reproducible shuffled order (seed 20261102). Both builds
+have an ordinary-checkout control, so differences in the controls remain
+visible. Wall/user/system time excludes validation and worktree removal.
+Every run checks clean status. Each warm-up hashes all 14,526 regular
+files with --no-filters and compares every result to the index blob ID,
+outside the timer. Physical extent accounting also runs outside the timer.
+Real-clone counters are required; scratch donors and verify-failed are
+rejected. These runs all cloned 14,469 real files per reflink checkout.
+
+Timing results
+---------------
+
+Cells below are median [minimum, maximum] wall seconds across five runs.
+Ordinary uses the alternative build's --no-reflink control. The full
+sample table also includes the original build's ordinary control.
+
+APFS
+~~~~
+
+[cols="1,1,2,2,2",options="header"]
+|===
+|Secondary |Workers |Ordinary |PR #1 pinned |Alternative
+|none (SHA1_DC) |1 |2.354 [2.266, 2.678] |5.342 [5.200, 8.892] |2.660 [2.391, 3.461]
+|none (SHA1_DC) |8 |1.222 [1.135, 1.696] |1.749 [1.664, 3.209] |1.361 [1.329, 1.631]
+|native |1 |2.318 [2.253, 3.662] |4.437 [4.135, 6.242] |2.733 [2.366, 4.464]
+|native |8 |1.348 [1.169, 1.608] |1.464 [1.423, 2.151] |1.348 [1.309, 2.516]
+|===
+
+XFS
+~~~
+
+[cols="1,1,2,2,2",options="header"]
+|===
+|Secondary |Workers |Ordinary |PR #1 pinned |Alternative
+|none (SHA1_DC) |1 |2.067 [1.993, 2.227] |2.201 [2.144, 2.993] |0.282 [0.271, 0.355]
+|none (SHA1_DC) |8 |0.826 [0.779, 1.089] |0.797 [0.784, 1.539] |0.314 [0.282, 0.322]
+|native |1 |2.063 [1.984, 2.266] |1.109 [1.036, 2.997] |0.300 [0.272, 0.421]
+|native |8 |0.829 [0.797, 1.116] |0.421 [0.409, 0.503] |0.385 [0.317, 0.603]
+|===
+
+btrfs
+~~~~~
+
+[cols="1,1,2,2,2",options="header"]
+|===
+|Secondary |Workers |Ordinary |PR #1 pinned |Alternative
+|none (SHA1_DC) |1 |2.401 [2.209, 2.556] |2.056 [2.024, 3.397] |0.290 [0.262, 0.415]
+|none (SHA1_DC) |8 |1.101 [0.988, 1.167] |0.896 [0.813, 1.078] |0.362 [0.326, 0.531]
+|native |1 |2.325 [2.260, 2.737] |0.997 [0.885, 1.441] |0.323 [0.266, 0.344]
+|native |8 |1.045 [1.015, 1.883] |0.526 [0.480, 0.883] |0.422 [0.350, 0.489]
+|===
+
+The XFS reduction is substantial for this fixture. APFS does not establish
+that cloning is consistently free: default one-worker and eight-worker
+medians remain above contemporary ordinary checkout, with overlapping
+and sometimes wide ranges. Native-secondary APFS medians also vary.
+The implementations have different donor-integrity guarantees, so timing
+alone does not select a winner.
+
+Physical file data
+-------------------
+
+The helper reports private bytes, allocated bytes, regular-file count,
+then completely shared regular-file count. Empty files require no data
+allocation and are counted as completely shared. Directory/index metadata
+and object storage are excluded. This is incremental recipient file-data
+saving, not whole-repository disk usage.
+
+[cols="1,1,4",options="header"]
+|===
+|Filesystem |Mode |private allocated files completely-shared
+|APFS |normal-alternative |1159319552 1159319552 14526 57
+|APFS |reflink-original |0 1159319552 14526 14526
+|APFS |reflink-alternative |0 1159319552 14526 14526
+|XFS |normal-alternative |1159319552 1159319552 14526 57
+|XFS |reflink-original |0 1159319552 14526 14526
+|XFS |reflink-alternative |0 1159319552 14526 14526
+|btrfs |normal-alternative |1159319552 1159319552 14526 57
+|btrfs |reflink-original |34840576 1159319552 14526 6020
+|btrfs |reflink-alternative |34840576 1159319552 14526 6020
+|===
+
+APFS and XFS show zero private recipient file data in these warm-ups.
+btrfs retains 34,840,576 bytes by this accounting, about 3.0% of the
+ordinary allocation; the measured shared portion is 1,124,478,976 bytes.
+All eight btrfs reflink warm-up cells reported the same allocation. Small
+files can use inline extents: filefrag -s -v on a cloned 44-byte
+.dockerignore reported last,not_aligned,inline,eof, without shared, and
+a 4,096-byte FIEMAP length. The helper counts such extents as private;
+these figures are file-extent accounting, not whole-volume metadata usage.
+
+No-op tests additionally compare all recipient private/allocated data and
+inode numbers before and after status, reset --hard, checkout -- .,
+restore ., checkout-index -af and switch --detach HEAD. Reflink is disabled
+for these subsequent operations, preventing a rewrite/reclone from hiding
+lost sharing. Both configured worker counts pass on APFS, XFS and btrfs.
+
+Correctness evidence and its limit
+----------------------------------
+
+contrib/reflink/mmap-race.py uses an already-dirtied writable mapping,
+flushes it, ages actual file times, and lets Git commit/refresh the true
+metadata. It then changes one byte through the mapping and compares
+ordinary checkout, this alternative and the pinned original. The index
+is written through Git; no index stat bytes are synthesized.
+
+[cols="1,2,2,2",options="header"]
+|===
+|Filesystem |Source check after mmap edit |Alternative recipient |Ordinary / pinned PR #1
+|APFS |mtime/ctime/inode unchanged; diff-files clean
+|Wrong initial byte X; cloned=1; diff-files clean
+|Correct byte A / correct byte A, verify-failed=1
+|XFS |mtime/ctime changed; diff-files dirty
+|Correct byte A; source-dirty fallback
+|Correct byte A / correct byte A
+|btrfs |mtime/ctime changed; diff-files dirty
+|Correct byte A; source-dirty fallback
+|Correct byte A / correct byte A
+|===
+
+Later donor mmap writes did not change recipient data on any filesystem.
+On APFS ordinary reset --hard also retained the hidden donor edit. That
+supports the stated stat-trust analogy for an existing file, but it does
+not make creation of a different worktree equivalent: ordinary creation
+reads the object database. This is a demonstrated extra donor race, not
+merely a hypothetical warning. Current attributes also cannot establish
+which historical conversion rules produced the donor's existing bytes.
+
+The mechanism document traces unpack-trees' verify_uptodate_1 and
+oneway_merge, checkout_entry_ca, ie_match_stat, racy timestamp handling,
+refresh and update_ce_after_write. Existing destination metadata/index
+integration already preserves no-op clones; copying donor timestamps into
+the recipient or introducing another verification/cache framework is not
+needed for that purpose.
+
+Validation
+-----------
+
+[cols="2,3",options="header"]
+|===
+|Environment |Observed result
+|APFS, ordinary full shell suite |1,066 scripts; aggregate success 33,226, failed 0, known-broken 377, total 34,350
+|APFS, forced reflink full shell suite |1,066 scripts; aggregate success 33,443, failed 0, known-broken 377, total 34,350
+|XFS, unprivileged full shell suite |Ordinary, forced-reflink and forced-discard modes: each success 32,710, failed 0, known-broken 371, total 33,590
+|btrfs, unprivileged full suite |Forced reflink: prove PASS; 1,067 harness entries, 33,852 assertions (includes the C-unit harness)
+|Focused reflink suites |t2410--t2414: 137 cases, passed on APFS, XFS and btrfs
+|SHA-256 repositories |All 137 focused cases passed on APFS and XFS with native secondary builds
+|C unit tests |make unit-tests passed separately on APFS and XFS
+|Unsupported filesystem |Focused suites passed on Linux overlay/ext4; physical-clone prerequisites skipped, ordinary fallback exercised
+|Actual LFS 3.7.1 |APFS local smudge smoke: ordinary and reflink contents match, clean status, LFS pointer in index
+|===
+
+Known-broken counts are existing TODO expectations; skipped tests are
+included in totals and are not claimed as executed passes. Linux full
+matrices preceded one new source-worktree-only filter case; that case
+passed in the subsequent 137-case focused runs. The btrfs full run includes
+it. The APFS aggregate results include focused reruns after fixing fixtures
+found by the full runs, rather than claiming pristine initial full runs.
+
+The original content assertions remain. Fixture fixes age real source files
+before normal refresh; split-index setup must also age symlinks, because
+update-index refresh marks an index changed if any entry is racy. The split
+case establishes and checks its actual shared base and replacement bitmap;
+it passed ten targeted repetitions after that fix. The ownership cleanup
+recreates its file rather than attempting an unprivileged chgrp to an
+inherited group unavailable to the user. On btrfs, the NOCOW failure-limit
+test also needs a non-racy donor so it reaches the clone syscall; its
+16-failure assertion is retained and passes. Focused suites pass without
+the forced-reflink test environment as well as the full forced runs.
+
+The existing suites cover visible dirty donors, preserved-mtime edits with
+weak stat settings, assume-unchanged/skip-worktree, actual concurrent
+source modification/path replacement, filters/encodings/CRLF/ident,
+metadata/xattrs/ACLs where supported, sparse/split index, submodules,
+worktree source lifecycle, parallel workers and unsupported fallbacks.
+Racy donor tests explicitly decline cloning and verify correct independent
+contents. These cases do not cover up the APFS mmap result above.
+
+Reproduction
+--------------
+
+Use independent source/build directories for the pinned original and this
+branch. Build each twice with the common flags above, adding only the native
+secondary option for the fast build. Include all and t/helper/test-tool.
+Do not reuse generated bin-wrappers pointing at another tree. Use a source
+checkout of the exact fixture commit on the filesystem under test, allow
+its mtimes to age, and use separate new output paths:
+
+----
+python3 contrib/reflink/benchmark.py --repo /fs/aws-cdk --output /fs/timings \
+  --original-dc /build/original-dc --original-fast /build/original-fast \
+  --alternative-dc /build/alternative-dc --alternative-fast /build/alternative-fast \
+  --repetitions 5
+python3 contrib/reflink/mmap-race.py --alternative /build/alternative-dc \
+  --original /build/original-dc --root /fs/new-mmap-experiment
+cd t
+for suite in t241[0-4]-*.sh; do ./$suite --root=/fs/tests || exit; done
+cd ..
+GIT_TEST_REFLINK_CHECKOUT=1 make -j4 test DEFAULT_TEST_TARGET=prove \
+  GIT_PROVE_OPTS=--jobs=4 GIT_TEST_OPTS=--root=/fs/tests
+make unit-tests
+----
+
+Repeat the full suite with GIT_TEST_REFLINK_CHECKOUT=0 and corrupt as
+applicable. Run tests as a normal user so permission checks execute. A
+privileged VM/container is needed only to create/mount the Linux test
+filesystems; the test user need not be root. Filesystem images and files
+must be task-owned scratch data, never an existing user volume.
+
+Raw wall samples
+-----------------
+
+Values are the five timed repetitions in execution/repetition order for
+that cell, in seconds. Standard deviations are sample standard deviations.
+Warm-ups are excluded. JSON emitted by the script additionally contains
+user/system time, per-run load averages, counters and build provenance.
+
+APFS
+~~~~
+
+[cols="1,1,2,4,1",options="header"]
+|===
+|Secondary |Workers |Mode |Samples (s) |Stddev (s)
+|dc |1 |normal-original |3.811, 2.591, 2.197, 2.598, 3.203 |0.632
+|dc |1 |normal-alternative |2.678, 2.266, 2.662, 2.308, 2.354 |0.200
+|dc |1 |reflink-original |5.342, 5.200, 8.892, 5.286, 5.381 |1.607
+|dc |1 |reflink-alternative |2.661, 2.418, 3.461, 2.391, 2.660 |0.434
+|dc |8 |normal-original |1.273, 1.150, 1.386, 1.226, 1.164 |0.096
+|dc |8 |normal-alternative |1.696, 1.186, 1.135, 1.222, 1.432 |0.231
+|dc |8 |reflink-original |1.749, 1.704, 3.209, 2.020, 1.664 |0.652
+|dc |8 |reflink-alternative |1.345, 1.631, 1.361, 1.329, 1.421 |0.124
+|fast |1 |normal-original |2.460, 2.318, 2.264, 2.345, 2.506 |0.101
+|fast |1 |normal-alternative |2.594, 3.662, 2.253, 2.318, 2.260 |0.600
+|fast |1 |reflink-original |5.365, 4.437, 6.242, 4.135, 4.325 |0.887
+|fast |1 |reflink-alternative |2.370, 2.366, 4.464, 2.733, 3.686 |0.923
+|fast |8 |normal-original |1.251, 1.251, 1.634, 1.141, 2.056 |0.379
+|fast |8 |normal-alternative |1.348, 1.608, 1.542, 1.169, 1.190 |0.200
+|fast |8 |reflink-original |1.758, 1.456, 2.151, 1.423, 1.464 |0.311
+|fast |8 |reflink-alternative |1.309, 1.481, 2.516, 1.321, 1.348 |0.519
+|===
+
+XFS
+~~~
+
+[cols="1,1,2,4,1",options="header"]
+|===
+|Secondary |Workers |Mode |Samples (s) |Stddev (s)
+|dc |1 |normal-original |2.317, 2.237, 2.028, 1.994, 2.016 |0.148
+|dc |1 |normal-alternative |2.227, 2.116, 2.067, 2.038, 1.993 |0.090
+|dc |1 |reflink-original |2.993, 2.144, 2.201, 2.148, 2.257 |0.363
+|dc |1 |reflink-alternative |0.355, 0.280, 0.271, 0.282, 0.297 |0.034
+|dc |8 |normal-original |0.960, 0.873, 0.862, 0.838, 0.857 |0.048
+|dc |8 |normal-alternative |1.089, 0.826, 0.815, 0.833, 0.779 |0.125
+|dc |8 |reflink-original |1.539, 1.089, 0.791, 0.797, 0.784 |0.328
+|dc |8 |reflink-alternative |0.322, 0.321, 0.282, 0.302, 0.314 |0.017
+|fast |1 |normal-original |2.278, 2.051, 2.132, 2.006, 2.028 |0.111
+|fast |1 |normal-alternative |2.266, 2.048, 1.984, 2.063, 2.089 |0.106
+|fast |1 |reflink-original |2.997, 1.159, 1.075, 1.036, 1.109 |0.852
+|fast |1 |reflink-alternative |0.421, 0.278, 0.370, 0.300, 0.272 |0.065
+|fast |8 |normal-original |1.054, 0.832, 0.946, 0.808, 0.756 |0.120
+|fast |8 |normal-alternative |1.116, 0.826, 0.829, 0.852, 0.797 |0.131
+|fast |8 |reflink-original |0.503, 0.421, 0.417, 0.439, 0.409 |0.038
+|fast |8 |reflink-alternative |0.603, 0.440, 0.385, 0.317, 0.356 |0.112
+|===
+
+btrfs
+~~~~~
+
+[cols="1,1,2,4,1",options="header"]
+|===
+|Secondary |Workers |Mode |Samples (s) |Stddev (s)
+|dc |1 |normal-original |2.236, 2.242, 2.586, 2.395, 2.281 |0.147
+|dc |1 |normal-alternative |2.401, 2.209, 2.556, 2.380, 2.508 |0.135
+|dc |1 |reflink-original |2.024, 2.046, 2.379, 3.397, 2.056 |0.587
+|dc |1 |reflink-alternative |0.276, 0.262, 0.398, 0.415, 0.290 |0.073
+|dc |8 |normal-original |1.028, 0.957, 1.195, 1.037, 0.997 |0.091
+|dc |8 |normal-alternative |1.070, 0.988, 1.151, 1.167, 1.101 |0.072
+|dc |8 |reflink-original |0.813, 0.896, 1.078, 0.957, 0.815 |0.111
+|dc |8 |reflink-alternative |0.369, 0.326, 0.362, 0.358, 0.531 |0.081
+|fast |1 |normal-original |2.256, 2.249, 2.810, 2.411, 2.309 |0.235
+|fast |1 |normal-alternative |2.260, 2.271, 2.531, 2.737, 2.325 |0.206
+|fast |1 |reflink-original |0.997, 0.885, 1.434, 0.915, 1.441 |0.280
+|fast |1 |reflink-alternative |0.340, 0.344, 0.299, 0.323, 0.266 |0.032
+|fast |8 |normal-original |0.999, 1.003, 1.020, 1.200, 1.190 |0.103
+|fast |8 |normal-alternative |1.038, 1.045, 1.883, 1.068, 1.015 |0.377
+|fast |8 |reflink-original |0.824, 0.507, 0.526, 0.883, 0.480 |0.193
+|fast |8 |reflink-alternative |0.489, 0.353, 0.434, 0.422, 0.350 |0.059
+|===
