@@ -325,6 +325,7 @@ integration_tests = [
   't2411-reflink-checkout-sources.sh',
   't2412-reflink-checkout-operations.sh',
   't2413-reflink-checkout-attributes.sh',
+  't2414-reflink-stat.sh',
   't2500-untracked-overwriting.sh',
   't2501-cwd-empty.sh',
   't3000-ls-files-others.sh',

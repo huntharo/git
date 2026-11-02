@@ -25,6 +25,37 @@ test_lazy_prereq REFLINK '
 	test-tool reflink probe .
 '
 
+# Sharing tests need non-racy donors. Give real files an old mtime, then
+# let Git validate their contents and record their actual stat data. Tests
+# for dirty and racy donors deliberately run after this preparation.
+# Symlinks must also be non-racy: update-index can otherwise rewrite a
+# split index as a full index even though every regular donor is old.
+reflink_stable_source () {
+	(
+		cd "${1:-.}" &&
+		git ls-files -s >.git-reflink-paths &&
+		while read mode oid stage path
+		do
+			case "$mode" in
+			100*)
+				if test -f "$path" && ! test -h "$path"
+				then
+					test-tool chmtime =-60 "$path" || exit 1
+				fi
+				;;
+			120000)
+				if test_have_prereq REFLINK_BUILD
+				then
+					test-tool reflink age "$path" || exit 1
+				fi
+				;;
+			esac
+		done <.git-reflink-paths &&
+		rm .git-reflink-paths &&
+		git update-index --refresh
+	)
+}
+
 # test_shared <a> <b>: <a> and <b> share data blocks.
 test_shared () {
 	test-tool reflink shared "$1" "$2" ||

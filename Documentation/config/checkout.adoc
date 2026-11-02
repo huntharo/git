@@ -48,10 +48,12 @@ well the parallel version performs.
 	switch, reset, restore, merge, rebase, worktree add, ...) create a
 	file that the worktree's reflink source holds unmodified as a
 	copy-on-write clone of it, so the copies share disk space until one
-	of them is modified. The result is otherwise identical to writing
-	the file: only files the reflink source holds unmodified, according
-	to its index, are cloned, every clone is read back and compared with
-	the object being checked out, and anything else is written as usual.
+	of them is modified. Eligible files must match the source index's
+	normal stat checks, be non-racy, and have an unconverted representation.
+	Clones are not read back or hashed. Racy or dirty donors, or disabled
+	ctime/stat checks, use the ordinary writer. As with Git's normal stat
+	cache, edits invisible to those checks can be missed; such a donor
+	can supply bytes that differ from a checkout from the object database.
 	Files subject to a filter driver, `ident`, `working-tree-encoding`
 	or CRLF conversion on checkout are never cloned. If false, cloning
 	is disabled, even in worktrees created with `git worktree add

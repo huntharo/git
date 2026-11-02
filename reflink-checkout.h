@@ -4,9 +4,8 @@
 /*
  * Copy-on-write ("reflink") checkout: when checkout is about to write a
  * regular file, clone it from another worktree of the same repository
- * (the "reflink source") instead, provided the reflink source holds that
- * exact blob, unmodified, and the result can be verified to be byte for
- * byte what checkout would have written. See
+ * (the "reflink source") instead, using its index's normal stat trust
+ * model to select non-racy, unconverted donors. See the limitations in
  * Documentation/technical/reflink-checkout.adoc.
  */
 
@@ -29,15 +28,15 @@ struct repository;
  * Try to create "path" for the regular-file entry "ce" by cloning it.
  * "ca" must be the conversion attributes for "ce". "path" must not exist.
  *
- * Returns 0 if "path" now holds exactly the bytes checkout would have
- * written for "ce", with the mode, owner and timestamps of a newly
- * written file. In that case "*fstat_done" tells whether "*st" was filled
+ * Returns 0 if "path" was cloned from an eligible donor, with the mode,
+ * owner and timestamps of a newly written file. In that case
+ * "*fstat_done" tells whether "*st" was filled
  * in from the new file, following the rules of fstat_checkout_output().
  *
  * Returns -1 if the entry was not cloned, for whatever reason (cloning
  * disabled, no reflink source, the reflink source does not hold this blob
- * or holds a modified copy, the filesystem cannot clone, verification
- * failed). Nothing is left at "path" and the caller must write the file
+ * or its stat data differs, the filesystem cannot clone, the donor
+ * changed). Nothing is left at "path" and the caller must write the file
  * the ordinary way. No error is ever reported to the user.
  */
 int reflink_checkout_entry(const struct cache_entry *ce,

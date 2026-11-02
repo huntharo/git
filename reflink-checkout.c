@@ -21,8 +21,10 @@
 #include "path.h"
 #include "read-cache-ll.h"
 #include "repository.h"
+#include "run-command.h"
 #include "statinfo.h"
 #include "strbuf.h"
+#include "string-list.h"
 #include "tempfile.h"
 #include "trace2.h"
 #include "worktree.h"
@@ -76,7 +78,7 @@ enum reflink_test_mode {
 	REFLINK_TEST_OFF = 0,
 	/* clone every eligible file, from a scratch donor if need be */
 	REFLINK_TEST_ON,
-	/* always clone from a wrong scratch donor: verification must fail */
+	/* clone a wrong scratch donor, then force discard-and-write fallback */
 	REFLINK_TEST_CORRUPT,
 };
 
@@ -99,6 +101,7 @@ static struct {
 	char *source_gitdir;
 	char *source_index_path;
 	struct index_state *source_index;
+	unsigned char *source_converted;
 	unsigned clone_errors;	/* failed clones while none succeeded */
 	unsigned clones_ok;
 } rc;
@@ -274,45 +277,103 @@ static int clone_unsupported(int err)
 	       err == ENOTTY;
 }
 
-/* Is the open file "fd" exactly the blob "oid"? */
-static int fd_matches_blob(struct repository *r, int fd,
-			   const struct object_id *oid)
+static int donor_changed(struct index_state *src,
+			 const struct cache_entry *ce, struct stat *st)
 {
-	/*
-	 * Collision detection buys nothing here: this is a second-preimage
-	 * check against an object we already trust.
-	 */
-	const struct git_hash_algo *algo = unsafe_hash_algo(r->hash_algo);
-	char hdr[MAX_HEADER_LEN];
-	static char buf[64 * 1024];
-	struct git_hash_ctx ctx;
-	struct object_id got;
-	struct stat st;
-	off_t left;
-	int hdrlen;
+	/* Only the recipient's executable bit determines the created mode. */
+	return ie_match_stat(src, ce, st,
+		CE_MATCH_IGNORE_VALID | CE_MATCH_IGNORE_SKIP_WORKTREE |
+		CE_MATCH_IGNORE_FSMONITOR | CE_MATCH_RACY_IS_DIRTY) & ~MODE_CHANGED;
+}
 
-	if (fstat(fd, &st) || !S_ISREG(st.st_mode))
+/*
+ * Attribute lookup must run in the source worktree's context: its attributes,
+ * config.worktree and core.attributesFile need not be ours. Use check-attr's
+ * existing lookup, once per process, rather than teaching convert.c about a
+ * second worktree. EOL conversions are covered by the blob size check below.
+ */
+static int read_source_attributes(struct index_state *src)
+{
+	static const char *attrs[] = { "filter", "working-tree-encoding", NULL };
+	struct child_process cmd = CHILD_PROCESS_INIT;
+	struct child_process config = CHILD_PROCESS_INIT;
+	struct strbuf input = STRBUF_INIT, output = STRBUF_INIT;
+	struct string_list filters = STRING_LIST_INIT_DUP;
+	const char *p, *end;
+	int ret = -1;
+	int status;
+
+	if (rc.source_converted)
 		return 0;
-	hdrlen = format_object_header(hdr, sizeof(hdr), OBJ_BLOB, st.st_size);
-	git_hash_init(&ctx, algo);
-	git_hash_update(&ctx, hdr, hdrlen);
-	for (left = st.st_size; left > 0; ) {
-		ssize_t n = xread(fd, buf, left < (off_t)sizeof(buf) ?
-				  (size_t)left : sizeof(buf));
-		if (n <= 0) {
-			git_hash_discard(&ctx);
-			return 0;
+	config.git_cmd = 1;
+	config.dir = rc.source_path;
+	config.no_stderr = 1;
+	prepare_other_repo_env(&config.env, rc.source_gitdir);
+	strvec_pushl(&config.args, "config", "--null", "--get-regexp",
+		     "^filter\\..*\\.(clean|smudge|process)$", NULL);
+	status = pipe_command(&config, NULL, 0, &output, 0, NULL, 0);
+	if (status && status != 1)
+		goto out;
+	for (char *key = output.buf; key < output.buf + output.len; ) {
+		char *value = strchr(key, '\n');
+		char *next = key + strlen(key) + 1;
+		char *dot;
+
+		if (!value)
+			goto out;
+		*value = 0;
+		dot = strrchr(key, '.');
+		if (!dot || dot <= key + strlen("filter."))
+			goto out;
+		*dot = 0;
+		string_list_insert(&filters, key + strlen("filter."));
+		key = next;
+	}
+	strbuf_reset(&output);
+	for (size_t i = 0; i < src->cache_nr; i++)
+		strbuf_add(&input, src->cache[i]->name,
+			   ce_namelen(src->cache[i]) + 1);
+	cmd.git_cmd = 1;
+	cmd.dir = rc.source_path;
+	cmd.no_stderr = 1;
+	prepare_other_repo_env(&cmd.env, rc.source_gitdir);
+	strvec_pushl(&cmd.args, "-c", "core.fsmonitor=false",
+		     "check-attr", "--stdin", "-z", NULL);
+	strvec_pushv(&cmd.args, attrs);
+	if (pipe_command(&cmd, input.buf, input.len, &output, 0, NULL, 0))
+		goto out;
+	CALLOC_ARRAY(rc.source_converted, src->cache_nr);
+	p = output.buf;
+	end = p + output.len;
+	for (size_t i = 0; i < src->cache_nr; i++) {
+		for (size_t j = 0; j < ARRAY_SIZE(attrs) - 1; j++) {
+			const char *fields[3];
+
+			for (size_t k = 0; k < ARRAY_SIZE(fields); k++) {
+				const char *nul = memchr(p, 0, end - p);
+				if (!nul)
+					goto out;
+				fields[k] = p;
+				p = nul + 1;
+			}
+			if (strcmp(fields[0], src->cache[i]->name) ||
+			    strcmp(fields[1], attrs[j]))
+				goto out;
+			if ((!j && string_list_has_string(&filters, fields[2])) ||
+			    (j && strcmp(fields[2], "unspecified") &&
+			     strcmp(fields[2], "unset")))
+				rc.source_converted[i] = 1;
 		}
-		git_hash_update(&ctx, buf, n);
-		left -= n;
 	}
-	/* nor may it have grown */
-	if (xread(fd, buf, 1) != 0) {
-		git_hash_discard(&ctx);
-		return 0;
-	}
-	git_hash_final_oid(&got, &ctx);
-	return !memcmp(got.hash, oid->hash, r->hash_algo->rawsz);
+	if (p == end)
+		ret = 0;
+out:
+	if (ret)
+		FREE_AND_NULL(rc.source_converted);
+	strbuf_release(&input);
+	strbuf_release(&output);
+	string_list_clear(&filters, 0);
+	return ret;
 }
 
 /*
@@ -321,11 +382,12 @@ static int fd_matches_blob(struct repository *r, int fd,
  * open on it, or -1.
  */
 static int open_donor(struct repository *r, const struct cache_entry *ce,
-		      struct strbuf *donor)
+		      struct strbuf *donor, const struct cache_entry **source_ce)
 {
 	struct index_state *src = source_index(r);
 	const struct cache_entry *sce;
 	struct stat st;
+	size_t size;
 	int pos, fd;
 
 	if (!src)
@@ -348,6 +410,21 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 	 */
 	if (is_empty_blob_oid(&ce->oid, r->hash_algo))
 		return -1;
+	/*
+	 * With these checks disabled, even restoring mtime can hide an edit.
+	 * Decline the optimization instead of adding content verification.
+	 */
+	if (!repo_config_values(r)->check_stat ||
+	    !repo_config_values(r)->trust_ctime) {
+		count(TRACE2_COUNTER_ID_REFLINK_SOURCE_DIRTY);
+		return -1;
+	}
+	if (read_source_attributes(src)) {
+		rc.source_unusable = 1;
+		return -1;
+	}
+	if (rc.source_converted[pos])
+		goto dirty;
 
 	strbuf_reset(donor);
 	strbuf_addf(donor, "%s/%s", rc.source_path, ce->name);
@@ -361,10 +438,13 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 	if (fd < 0)
 		goto dirty;
 	if (fstat(fd, &st) || !S_ISREG(st.st_mode) ||
-	    match_stat_data(&sce->ce_stat_data, &st)) {
+	    donor_changed(src, sce, &st) ||
+	    odb_read_object_info(r->objects, &ce->oid, &size) != OBJ_BLOB ||
+	    st.st_size < 0 || (uintmax_t)st.st_size != size) {
 		close(fd);
 		goto dirty;
 	}
+	*source_ce = sce;
 	return fd;
 
 dirty:
@@ -375,7 +455,7 @@ dirty:
 /*
  * Test mode: write the blob to a scratch file with deliberately unlike
  * metadata, so that every eligible file in the test suite goes through
- * cloning, metadata fix-ups and verification. Returns a descriptor on
+ * cloning, metadata fix-ups and fallback. Returns a descriptor on
  * it; the file itself is already gone.
  */
 static int open_scratch_donor(struct repository *r, const struct cache_entry *ce)
@@ -457,6 +537,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 	struct repository *r = state->istate && state->istate->repo ?
 		state->istate->repo : the_repository;
 	static struct strbuf donor = STRBUF_INIT;
+	const struct cache_entry *source_ce = NULL;
 	int src_fd = -1, fd, scratch = 0;
 
 	if (!rc.initialized)
@@ -466,7 +547,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 		return -1;
 
 	if (rc.test != REFLINK_TEST_CORRUPT)
-		src_fd = open_donor(r, ce, &donor);
+		src_fd = open_donor(r, ce, &donor, &source_ce);
 	if (src_fd < 0) {
 		if (!rc.test)
 			return -1;
@@ -507,19 +588,23 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 		}
 		return -1;
 	}
-	close(src_fd);
 	rc.clones_ok++;
 
 	/*
-	 * Phase two: make sure what we got is byte for byte what checkout
-	 * would have written, whatever happened to the donor meanwhile.
+	 * A concurrent ordinary write must not be recorded as clean in the
+	 * recipient. Recheck the same descriptor against the source's index;
+	 * never copy donor stat data into the recipient's cache entry.
 	 */
-	if (!fd_matches_blob(r, fd, &ce->oid)) {
+	if ((!scratch && (fstat(src_fd, st) ||
+			 donor_changed(rc.source_index, source_ce, st))) ||
+	    (scratch && rc.test == REFLINK_TEST_CORRUPT)) {
 		count(TRACE2_COUNTER_ID_REFLINK_VERIFY_FAILED);
+		close(src_fd);
 		close(fd);
 		unlink(path);
 		return -1;
 	}
+	close(src_fd);
 
 	*fstat_done = fstat_checkout_output(fd, state, st);
 	if (close(fd)) {

@@ -24,6 +24,7 @@ remove_wt () {
 restore_main () {
 	git read-tree --empty &&
 	git reset -q --hard &&
+	reflink_stable_source &&
 	git clean -q -f -d -x -e "wt-*" -e "*.json" -e "*.tree" \
 		-e "*.index" -e "*.status" -e "*.count" -e "expect*" -e "actual*"
 }
@@ -93,6 +94,7 @@ test_expect_success 'setup' '
 		git commit -q -m swap &&
 		git checkout -q main
 	fi &&
+	reflink_stable_source &&
 	git diff-index --quiet HEAD &&
 	git diff-files --quiet
 '
@@ -387,9 +389,9 @@ test_lazy_prereq OTHER_GROUP '
 '
 
 test_expect_success REFLINK,POSIXPERM,OTHER_GROUP 'clones get the owner and group of a new file, not the donor'"'"'s' '
-	group=$(file_owner big1 | cut -d" " -f2) &&
-	test_when_finished "chgrp $group big1 && git update-index -q --refresh &&
-		remove_wt wt-grp wt-grpref" &&
+	# A directory can give a new file a group we cannot chgrp back to
+	# (e.g. wheel under /tmp on macOS). Recreate it during cleanup.
+	test_when_finished "remove_wt wt-grp wt-grpref && restore_main" &&
 	chgrp $(other_group) big1 &&
 	git update-index --refresh &&
 	git worktree add -q --detach --reflink wt-grp main &&
@@ -528,7 +530,7 @@ test_expect_success REFLINK 'dirty donors are never cloned' '
 	test_same_as_checkout wt-dirty main
 '
 
-test_expect_success REFLINK 'CRLF donor under text=auto fails verification' '
+test_expect_success REFLINK 'CRLF donor under text=auto is ineligible' '
 	test_when_finished "remove_wt wt-crlf && restore_main" &&
 	rm crlf.txt &&
 	git -c core.autocrlf=true checkout -- crlf.txt &&
@@ -537,7 +539,8 @@ test_expect_success REFLINK 'CRLF donor under text=auto fails verification' '
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt-crlf main &&
-	test_reflink_count verify-failed 1 trace.json &&
+	test_reflink_count verify-failed 0 trace.json &&
+	test_reflink_count source-dirty 1 trace.json &&
 	test_reflink_count cloned $((NONEMPTY - 1)) trace.json &&
 	git show HEAD:crlf.txt >expect &&
 	test_cmp expect wt-crlf/crlf.txt &&
@@ -547,6 +550,7 @@ test_expect_success REFLINK 'CRLF donor under text=auto fails verification' '
 test_expect_success REFLINK 'same-size edit with the mtime restored is never cloned' '
 	test_when_finished "remove_wt wt-samesize && restore_main" &&
 	mtime=$(file_mtime big2) &&
+	sleep 1 &&
 	make_blob_file big2 256 other-seed &&
 	test-tool chmtime =$mtime big2 &&
 	rm -f trace.json &&
@@ -559,7 +563,7 @@ test_expect_success REFLINK 'same-size edit with the mtime restored is never clo
 	test_same_as_checkout wt-samesize main
 '
 
-test_expect_success REFLINK 'same-size edit that passes phase one fails verification' '
+test_expect_success REFLINK 'minimal stat checking declines cloning without extra verification' '
 	test_when_finished "remove_wt wt-minimal && restore_main" &&
 	# without ctime, inode and nanoseconds the edit looks clean
 	test_config core.checkStat minimal &&
@@ -569,9 +573,9 @@ test_expect_success REFLINK 'same-size edit that passes phase one fails verifica
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt-minimal main &&
-	test_reflink_count verify-failed 1 trace.json &&
-	test_reflink_count source-dirty 0 trace.json &&
-	test_reflink_count cloned $((NONEMPTY - 1)) trace.json &&
+	test_reflink_count verify-failed 0 trace.json &&
+	test_reflink_count source-dirty $NONEMPTY trace.json &&
+	test_reflink_count cloned 0 trace.json &&
 	test_not_shared big2 wt-minimal/big2 &&
 	git show HEAD:big2 >expect &&
 	test_cmp expect wt-minimal/big2 &&
@@ -597,18 +601,20 @@ test_expect_success REFLINK 'donor modified after phase one fails verification' 
 
 test_expect_success REFLINK 'donor replaced by a directory after phase one' '
 	test_when_finished "remove_wt wt-replace && rm -rf big1 big1.tampered && restore_main" &&
+	test_config core.useNanoSec true &&
 	rm -f trace.json &&
 	GIT_TEST_REFLINK_TAMPER=big1:replace \
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt-replace main &&
 	test_path_is_file big1/untracked &&
 	test_path_is_file big1.tampered &&
-	# cloned from the descriptor opened in phase one
-	test_reflink_count cloned $NONEMPTY trace.json &&
+	# The open descriptor remains safe, but rename changed its ctime.
+	# The normal stat recheck conservatively falls back.
+	test_reflink_count cloned $((NONEMPTY - 1)) trace.json &&
 	test_path_is_file wt-replace/big1 &&
 	! test -h wt-replace/big1 &&
 	test_path_is_missing wt-replace/big1.tampered &&
-	test_shared big1.tampered wt-replace/big1 &&
+	test_not_shared big1.tampered wt-replace/big1 &&
 	git show HEAD:big1 >expect &&
 	test_cmp expect wt-replace/big1 &&
 	find wt-replace -name untracked >actual &&
