@@ -371,10 +371,10 @@ test suite. Accept any boolean values that are accepted by git-config.
 GIT_TEST_REFLINK_CHECKOUT=<boolean> forces reflink checkout on (or,
 when false, off) for the whole test suite. When on, every file that
 checkout could clone is cloned, from a scratch copy of the blob if the
-clone source does not have it, so that cloning, its metadata fix-ups and
-its verification are exercised everywhere. The value "corrupt" makes
-those scratch copies wrong, so that every clone must be rejected by
-verification and the file written the ordinary way. Either way the test
+clone source does not have it, so that cloning and its metadata fix-ups
+are exercised everywhere. The legacy value "corrupt" makes those scratch
+copies wrong and forces their rejection, exercising the discard-and-write
+fallback (there is no longer a clone-content verifier). Either way the test
 suite must pass unchanged. Cloning only happens on filesystems that
 support it (APFS, btrfs, XFS, bcachefs, overlayfs); elsewhere this
 tests the fallback.

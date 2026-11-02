@@ -71,6 +71,7 @@ test_expect_success 'setup' '
 	git add a b d &&
 	git commit -q -m other &&
 	git checkout -q src &&
+	reflink_stable_source &&
 
 	# scratch files of the tests below
 	cat >>.git/info/exclude <<-\EOF &&

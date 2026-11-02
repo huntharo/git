@@ -4,6 +4,9 @@
  *   test-tool reflink probe <dir>
  *	exit 0 if clone_file() works for files in <dir>
  *
+ *   test-tool reflink age <path>
+ *	make a fixture's real mtime non-racy, without following symlinks
+ *
  *   test-tool reflink shared <a> <b>
  *	exit 0 if <a> and <b> start on the same physical block, i.e. <b>
  *	is (still) a clone of <a> or the other way round, 1 if they do not,
@@ -225,10 +228,32 @@ static int tree_usage(struct strbuf *path, struct usage_totals *t)
 	return ret;
 }
 
+static int age_file(const char *path)
+{
+#if defined(__APPLE__) || defined(__linux__)
+	struct stat st;
+	struct timespec times[2];
+
+	if (lstat(path, &st))
+		return error_errno("lstat(%s)", path);
+	times[0].tv_sec = st.st_atime;
+	times[0].tv_nsec = 0;
+	times[1].tv_sec = time(NULL) - 60;
+	times[1].tv_nsec = 0;
+	if (utimensat(AT_FDCWD, path, times, AT_SYMLINK_NOFOLLOW))
+		return error_errno("utimensat(%s)", path);
+	return 0;
+#else
+	return error("aging symlinks is not supported on this platform: %s", path);
+#endif
+}
+
 int cmd__reflink(int argc, const char **argv)
 {
 	if (argc == 3 && !strcmp(argv[1], "probe"))
 		return probe(argv[2]);
+	if (argc == 3 && !strcmp(argv[1], "age"))
+		return age_file(argv[2]);
 	if (argc == 4 && !strcmp(argv[1], "shared")) {
 		long long a = first_block(argv[2]), b = first_block(argv[3]);
 		if (a < 0 || b < 0)
@@ -252,5 +277,5 @@ int cmd__reflink(int argc, const char **argv)
 		       t.private_bytes, t.allocated, t.files, t.fully_shared);
 		return 0;
 	}
-	usage("test-tool reflink (probe <dir> | shared <a> <b> | private-bytes <path>...)");
+	usage("test-tool reflink (probe <dir> | age <path> | shared <a> <b> | private-bytes <path>...)");
 }

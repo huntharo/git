@@ -82,6 +82,8 @@ test_expect_success 'setup' '
 	git worktree add -q --no-reflink one-oh maint &&
 	make_blob_file one-oh/dir/d 64 d2 &&
 	git -C one-oh commit -q -a -m "maint: fix d" &&
+	reflink_stable_source &&
+	reflink_stable_source one-oh &&
 	test_path_is_missing "$(source_file one-oh)"
 '
 
@@ -248,6 +250,7 @@ test_expect_success REFLINK 'reflink-source file beats checkout.reflinkSource be
 	test_when_finished "git worktree remove --force w-prec" &&
 	test_when_finished "git worktree remove --force prec-cfg" &&
 	git worktree add -q --no-reflink --detach prec-cfg maint &&
+	reflink_stable_source prec-cfg &&
 	git worktree add -q --no-reflink --detach w-prec maint &&
 
 	echo worktrees/one-oh >"$(source_file w-prec)" &&
@@ -384,6 +387,7 @@ test_expect_success REFLINK 'a moved reflink source is still used' '
 	test_when_finished "git worktree remove --force mv-r" &&
 	test_when_finished "git worktree remove --force mv-moved" &&
 	git worktree add -q --no-reflink --detach mv-src maint &&
+	reflink_stable_source mv-src &&
 	git worktree add -q --reflink-source=mv-src --detach mv-r maint &&
 	test_source_file mv-r worktrees/mv-src &&
 	git worktree move mv-src mv-moved &&
@@ -400,6 +404,7 @@ test_expect_success REFLINK 'a moved reflink source is still used' '
 test_expect_success REFLINK 'a removed reflink source falls back to the default source' '
 	test_when_finished "git worktree remove --force rm-r" &&
 	git worktree add -q --no-reflink --detach rm-src maint &&
+	reflink_stable_source rm-src &&
 	git worktree add -q --reflink-source=rm-src --detach rm-r maint &&
 	test_shared rm-src/b rm-r/b &&
 	git worktree remove rm-src &&
@@ -420,6 +425,7 @@ test_expect_success REFLINK 'a removed reflink source falls back to the default 
 test_expect_success REFLINK 'a deleted or pruned reflink source falls back to the main worktree' '
 	test_when_finished "git worktree remove --force pr-r" &&
 	git worktree add -q --no-reflink --detach pr-src maint &&
+	reflink_stable_source pr-src &&
 	git worktree add -q --reflink-source=pr-src --detach pr-r maint &&
 	rm -rf pr-src &&
 	rm pr-r/a pr-r/b &&
@@ -461,11 +467,13 @@ test_expect_success REFLINK 'a worktree id reused after prune is harmless' '
 	test_when_finished "git worktree remove --force reuse-r" &&
 	test_when_finished "git worktree remove --force elsewhere/reuse" &&
 	git worktree add -q --no-reflink --detach reuse maint &&
+	reflink_stable_source reuse &&
 	git worktree add -q --reflink-source=reuse --detach reuse-r maint &&
 	rm -rf reuse &&
 	git worktree prune &&
 	mkdir elsewhere &&
 	git worktree add -q --no-reflink --detach elsewhere/reuse v2 &&
+	reflink_stable_source elsewhere/reuse &&
 	echo "$(pwd)/elsewhere/reuse/.git" >expect &&
 	test_cmp expect .git/worktrees/reuse/gitdir &&
 	test_source_file reuse-r worktrees/reuse &&
@@ -488,10 +496,12 @@ test_expect_success REFLINK 'a reflink source changing branch only changes what 
 	test_when_finished "git worktree remove --force br-r2" &&
 	test_when_finished "git worktree remove --force br-r3" &&
 	git worktree add -q --no-reflink --detach br-src maint &&
+	reflink_stable_source br-src &&
 	git worktree add -q --reflink-source=br-src --detach br-r1 maint &&
 	git worktree add -q --reflink-source=br-src --detach br-r2 maint &&
 	test_shared br-src/b br-r1/b &&
 	git -C br-src checkout -q --detach v2 &&
+	reflink_stable_source br-src &&
 
 	# the recipients keep their data, and still share it
 	for wt in br-r1 br-r2
@@ -683,6 +693,7 @@ test_expect_success REFLINK 'reflink source with a version 4 index and no extens
 	test_when_finished "git worktree remove --force v4-src" &&
 	test_when_finished "git worktree remove --force v4-r" &&
 	git worktree add -q --no-reflink --detach v4-src v2 &&
+	reflink_stable_source v4-src &&
 	git -C v4-src update-index --index-version 4 &&
 	(
 		cd v4-src &&
@@ -700,7 +711,8 @@ test_expect_success REFLINK 'reflink source with a version 4 index and no extens
 
 test_expect_success 'bare repository: setup' '
 	git clone -q --bare . bare.git &&
-	git -C bare.git worktree add -q --no-reflink --detach ../bw1 maint
+	git -C bare.git worktree add -q --no-reflink --detach ../bw1 maint &&
+	reflink_stable_source bw1
 '
 
 test_expect_success 'bare repository: --reflink run from a linked worktree uses it' '
@@ -875,6 +887,7 @@ other_fs_test () {
 
 	# the source is on the other filesystem
 	git worktree add -q --no-reflink --detach "$other/src" maint &&
+	reflink_stable_source "$other/src" &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --reflink-source="$other/src" \

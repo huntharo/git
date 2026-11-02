@@ -173,6 +173,7 @@ test_expect_success 'setup' '
 	git -C scratch branch case-collide &&
 
 	git worktree remove --force scratch &&
+	reflink_stable_source &&
 	git status --porcelain=v1 --untracked-files=no >actual &&
 	test_must_be_empty actual
 '
@@ -240,16 +241,17 @@ test_expect_success REFLINK 'parallel checkout workers honour eligibility' '
 	test_same_as_checkout wt convert
 '
 
-test_expect_success REFLINK 'converted donors are rejected by verification' '
+test_expect_success REFLINK 'converted donors are ineligible' '
 	test_when_finished "remove_wt src wt" &&
 	git worktree add -q --detach --no-reflink src convert &&
+	reflink_stable_source src &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink-source=src wt main &&
 	# plain.txt (CRLF), id.txt (expanded), rot.txt and proc.txt
 	# (smudged) do not hold their blob in "src"; noid.txt does.
 	# .gitattributes differs, so it has no donor.
-	test_counts trace.json 10 1 0 4 &&
+	test_counts trace.json 10 1 4 0 &&
 	test_all_shared src wt noid.txt $UNCONVERTED &&
 	test_none_shared src wt plain.txt id.txt rot.txt proc.txt
 '
@@ -257,6 +259,7 @@ test_expect_success REFLINK 'converted donors are rejected by verification' '
 test_expect_success 'converted donors: same as a normal checkout' '
 	test_when_finished "remove_wt src wt" &&
 	git worktree add -q --detach --no-reflink src convert &&
+	reflink_stable_source src &&
 	git worktree add -q --detach --reflink-source=src wt main &&
 	for f in $FILES
 	do
@@ -408,6 +411,7 @@ test_expect_success 'sparse recipient: same as a normal checkout' '
 # sparse_source <dir> [--sparse-index | --no-sparse-index]
 sparse_source () {
 	git worktree add -q --detach --no-reflink "$1" main &&
+	reflink_stable_source "$1" &&
 	git -C "$1" sparse-checkout set --cone $2 in
 }
 
@@ -458,17 +462,24 @@ test_expect_success REFLINK 'split index in the source' '
 	test_when_finished "remove_wt src wt" &&
 	git -c core.splitIndex=true \
 		worktree add -q --detach --no-reflink src main &&
-	# re-add plain.txt so that its stat data is only in the split
+	reflink_stable_source src &&
+	# Establish the shared base after making all donors non-racy.
+	git -C src update-index --split-index &&
+	test-tool dump-split-index .git/worktrees/src/index >base-split &&
+	# Refresh plain.txt so that its new stat data is only in the split
 	# part; the shared index has stale stat data for it
-	test-tool chmtime +10 src/plain.txt &&
+	test-tool chmtime -10 src/plain.txt &&
 	git -C src -c core.splitIndex=true -c splitIndex.maxPercentChange=100 \
-		add plain.txt &&
+		update-index --refresh &&
 	test-tool dump-split-index .git/worktrees/src/index >split &&
-	test_grep "^base " split &&
+	grep "^base " base-split >expect.base &&
+	grep "^base " split >actual.base &&
+	test_cmp expect.base actual.base &&
 	test_grep "^replacements: [0-9]" split &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
-		git worktree add -q --detach --reflink-source=src wt main &&
+		git -c core.splitIndex=false worktree add -q --detach \
+			--reflink-source=src wt main &&
 	test_counts trace.json 15 0 0 0 &&
 	test_all_shared src wt $FILES &&
 	test_same_as_checkout wt main
@@ -478,6 +489,7 @@ test_expect_success REFLINK 'core.splitIndex=true everywhere' '
 	test_when_finished "remove_wt src wt" &&
 	test_config core.splitIndex true &&
 	git worktree add -q --detach --no-reflink src main &&
+	reflink_stable_source src &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink-source=src wt main &&
@@ -493,6 +505,7 @@ test_expect_success REFLINK 'fsmonitor hook in the source: its files are still c
 	printf "last_update_token\0"
 	EOF
 	git worktree add -q --detach --no-reflink src main &&
+	reflink_stable_source src &&
 	git -C src -c core.fsmonitor="$(pwd)/.git/fsmonitor-none" \
 		-c core.fsmonitorHookVersion=2 status >/dev/null &&
 	git -C src -c core.fsmonitor="$(pwd)/.git/fsmonitor-none" \
@@ -515,6 +528,7 @@ test_expect_success FSMONITOR_DAEMON,REFLINK 'fsmonitor daemon in the source' '
 		remove_wt src wt
 	" &&
 	git worktree add -q --detach --no-reflink src main &&
+	reflink_stable_source src &&
 	git -C src -c core.fsmonitor=true fsmonitor--daemon start &&
 	git -C src -c core.fsmonitor=true status >/dev/null &&
 	test-tool chmtime +10 src/plain.txt &&
@@ -540,7 +554,8 @@ test_expect_success 'setup submodule' '
 	make_blob_file super/super.txt 64 &&
 	git -C super add super.txt &&
 	git -C super submodule add -q ../subrepo sub &&
-	git -C super commit -q -m super
+	git -C super commit -q -m super &&
+	reflink_stable_source super
 '
 
 test_expect_success 'submodules: update --init in a reflinked worktree' '

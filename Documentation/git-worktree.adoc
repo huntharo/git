@@ -218,13 +218,13 @@ To remove a locked worktree, specify `--force` twice.
 `--no-reflink`::
 	With `add`, create files that are unchanged from the reflink source
 	as copy-on-write clones of the reflink source's copies, so that they
-	share disk space until either copy is modified. The new worktree is
-	otherwise exactly what `add` creates without this option: a file is
-	cloned only if the reflink source holds the very blob being checked
-	out, unmodified, and the clone is verified against that blob before
-	it is used; everything else, including every file the reflink source
-	has modified, is written as usual, and untracked and ignored files
-	are never copied. The reflink source is the worktree named by
+	share disk space until either copy is modified. A donor must have
+	the requested blob in its index and pass Git's normal stat checks;
+	racy or visibly modified files are written as usual. Clones are not
+	read back or hashed: edits that evade the stat cache can be copied,
+	which differs from creating files from the object database. See
+	`checkout.reflink` in linkgit:git-config[1]. Untracked and ignored
+	files are never copied. The reflink source is the worktree named by
 	`--reflink-source` or `checkout.reflinkSource`, else the main
 	worktree (or, if that is bare, the worktree `add` is run from).
 +
