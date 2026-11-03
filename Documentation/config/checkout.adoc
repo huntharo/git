@@ -66,6 +66,17 @@ well the parallel version performs.
 	bcachefs and overlayfs (Linux); elsewhere, across filesystems, and
 	on Windows, files are silently written as usual. See
 	linkgit:git-worktree[1].
++
+A successful `reset --hard` with effective reflink enablement also runs
+`worktree reflink` over eligible existing files, including clean private files
+that ordinary reset leaves untouched. It preserves the ordinary reset result
+and existing physical representation. The pass skips fully shared files and
+unsupported cases; failures warn without undoing or failing the completed
+reset. It incurs metadata scanning and, for private candidates, kernel
+comparison on Linux or clone/byte-comparison/replacement on APFS. APFS has the
+file-replacement concurrency limits documented in linkgit:git-worktree[1].
+`reset --soft`, `reset --mixed` and no-op checkout/switch do not request this
+repair pass. Explicit false overrides a worktree's reflink-source marker.
 
 `checkout.reflinkSource`::
 	The worktree that `checkout.reflink` clones files from, given as a

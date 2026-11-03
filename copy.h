@@ -35,4 +35,20 @@ int path_fs_can_clone(const char *path);
 /* Like clone_fd_to_file(), opening "src" (not following symlinks). */
 int clone_file(const char *dst, const char *src, int mode);
 
+/* Physical allocation, including partially shared files. Returns -1 if unknown. */
+struct file_data_usage {
+	uintmax_t allocated;
+	uintmax_t private_bytes;
+};
+int get_file_data_usage(int fd, struct file_data_usage *usage);
+
+/*
+ * In-place compare-and-share, preserving the destination inode and contents.
+ * Returns 0 for a complete range, 1 for differing bytes, -1 on error. Even a
+ * partial operation never changes logical bytes. *done counts shared ranges,
+ * not freed storage. Unsupported platforms (including APFS) return ENOTSUP.
+ */
+int can_dedupe_file_data(int fd);
+int dedupe_file_data(int src_fd, int dst_fd, uintmax_t size, uintmax_t *done);
+
 #endif /* COPY_H */
