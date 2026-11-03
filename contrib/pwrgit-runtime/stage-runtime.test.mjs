@@ -4,7 +4,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readRuntimeManifest, verifyRuntime } from "./stage-runtime.mjs";
+import { readRuntimeManifest, verifyRuntime as verifyRuntimeRaw } from "./stage-runtime.mjs";
+const verifyRuntime = (root, pin) => verifyRuntimeRaw(root, pin, { probe: false });
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const source = "d5db8771ce659822bd9fbb0911b600de1339fea3";

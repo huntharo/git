@@ -28,6 +28,9 @@ env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM='1',
            GIT_TERMINAL_PROMPT='0')
 git = root / 'bin/git'
 assert run([git, '--version'], env=env) == 'git version ' + m['version']
+build_options = run([git, 'version', '--build-options'], env=env).splitlines()
+if 'SHA-1: SHA1_DC' not in build_options or 'built from commit: ' + m['source_revision'] not in build_options:
+    raise ValueError('Executable source revision or primary SHA1_DC protection differs from provenance')
 assert run([git, '--exec-path'], env=env) == str(root / 'libexec/git-core')
 assert run([git, 'lfs', 'version'], env=env).startswith('git-lfs/' + m['lfs_version'] + ' ')
 assert (root / 'share/git-core/templates/hooks').is_dir()
@@ -74,6 +77,7 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-relocated-') as tmp:
         if not hasattr(error, 'returncode'):
             raise
 result = dict(version=m['version'], source_revision=m['source_revision'],
+              build_options=build_options,
               architecture=m['architecture'], sealed_inventory=True,
               relocated_exec_path=True, lfs=True, templates=True, executables=executables)
 if a.report:

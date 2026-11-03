@@ -89,6 +89,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       sha256: ${{ steps.archive.outputs.sha256 }}
+      version: ${{ steps.archive.outputs.version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -131,6 +132,11 @@ jobs:
           tar -czf "$RUNNER_TEMP/macos-signing-input.tar.gz" -C "$RUNNER_TEMP/signing-input" .
           digest="$(shasum -a 256 "$RUNNER_TEMP/macos-signing-input.tar.gz" | awk '{print $1}')"
           echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json,os
+          from pathlib import Path
+          print('version='+json.loads((Path(os.environ['RUNNER_TEMP'])/'universal/pwrgit-build.json').read_text())['version'])
+          PY
           printf '%s  macos-signing-input.tar.gz\n' "$digest" > "$RUNNER_TEMP/macos-signing-input.tar.gz.sha256"
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -154,14 +160,22 @@ jobs:
 
   signing-readiness:
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.sign)
+    needs: macos
     runs-on: ubuntu-24.04
     steps:
       - name: Require immutable release tag and protected existing signing environment
         env:
           GH_TOKEN: ${{ github.token }}
+          EXPECTED_VERSION: ${{ needs.macos.outputs.version }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_REF" == refs/tags/v*-dev-pwrgit.* ]]
+          test "$GITHUB_REF_NAME" = "v$EXPECTED_VERSION"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+          python3 - <<'PY'
+          import json,os
+          assert not any(r['tag_name']==os.environ['GITHUB_REF_NAME'] for page in json.load(open('releases.json')) for r in page), 'An existing immutable release cannot be re-signed or replaced'
+          PY
           gh api "repos/$GITHUB_REPOSITORY/environments/apple-signing" > environment.json
           python3 - <<'PY'
           import json
