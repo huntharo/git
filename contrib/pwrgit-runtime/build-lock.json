@@ -54,5 +54,7 @@
     "revision": "b84b33847fe6458f36ef521534dc0eac953cb379",
     "url": "https://github.com/git-lfs/git-lfs/archive/refs/tags/v3.7.1.tar.gz",
     "sha256": "0e83566a9e2477e03627e7fd6bf81f01fadbf93dcaf6abd2686fca90f6bac7dd"
-  }
+  },
+  "linux_image": "ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11",
+  "ubuntu_snapshot": "20261102T000000Z"
 }
