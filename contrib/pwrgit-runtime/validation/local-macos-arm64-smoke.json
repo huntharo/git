@@ -1,0 +1,40 @@
+{
+  "cases": [
+    {
+      "changed_contents_independent": true,
+      "crlf": true,
+      "dirty_donor": true,
+      "disabled_fallback": true,
+      "external_filter": true,
+      "lfs_smudge_and_pointer": true,
+      "noop_preserved": true,
+      "payload_sha256": "4d6b3234ff17c482e8dd3e6dd8fb9157f495c35ad74fd3631d8f133e6d662c7b",
+      "real_block_sharing": true,
+      "sparse": true,
+      "submodule": true,
+      "trace_counters": {
+        "cloned": 3
+      },
+      "workers": 1
+    },
+    {
+      "changed_contents_independent": true,
+      "crlf": true,
+      "dirty_donor": true,
+      "disabled_fallback": true,
+      "external_filter": true,
+      "lfs_smudge_and_pointer": true,
+      "noop_preserved": true,
+      "payload_sha256": "801019f103fe77566114bd2e5ef8b627c0828ca5c978465bd3fc1538e9f792f8",
+      "real_block_sharing": true,
+      "sparse": true,
+      "submodule": true,
+      "trace_counters": {
+        "cloned": 1
+      },
+      "workers": 8
+    }
+  ],
+  "https": true,
+  "version": "git version 2.56.0-dev-pwrgit.1"
+}

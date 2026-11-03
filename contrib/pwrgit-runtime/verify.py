@@ -22,7 +22,7 @@ if m['primary_sha1'] != 'SHA1_DC' or not re.fullmatch('[0-9a-f]{40}', m['source_
     raise ValueError('Invalid source/hash provenance')
 if a.require_signed and (m['signing'] != 'Developer ID Application: PwrDrvr LLC (T44CNHC4UH)' or m['notarized'] is not True):
     raise ValueError('Expected notarized PwrDrvr payload')
-env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_'))}
+env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_', 'LD_'))}
 env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM='1',
            PATH=str(root / 'bin') + os.pathsep + '/usr/bin:/bin:/usr/sbin:/sbin',
            GIT_TERMINAL_PROMPT='0')
@@ -35,6 +35,18 @@ for name in ['COPYING', 'LICENSE.git-lfs', 'SOURCES']:
     assert (root / name).is_file(), name
 executables = {}
 for path in sorted(root.rglob('*')):
+    if platform.system() == 'Linux' and path.is_file() and not path.is_symlink():
+        with path.open('rb') as stream:
+            elf = stream.read(4) == b'\x7fELF'
+        if elf:
+            versions = {(int(x), int(y)) for x, y in re.findall(r'GLIBC_(\d+)\.(\d+)', run(['readelf', '--version-info', path]))}
+            assert not versions or max(versions) <= (2, 35), (path, versions)
+            deps = run(['ldd', path], env=env) if 'NEEDED' in run(['readelf', '-d', path]) else 'static'
+            assert 'not found' not in deps, (path, deps)
+            for name, target in re.findall(r'(\S+) => (/\S+)', deps):
+                if not re.match(r'lib(c|m|dl|rt|pthread|resolv|util|anl)\.so\.', name):
+                    assert Path(target).resolve().is_relative_to(root), (path, name, target)
+            executables[path.relative_to(root).as_posix()] = {'dependencies': deps, 'glibc_versions': sorted(versions)}
     if not is_macho(path):
         continue
     arches = run(['lipo', '-archs', path]).split()

@@ -40,7 +40,7 @@ archive = out / 'git-source.tar.gz'
 with archive.open('wb') as stream:
     subprocess.run(['git', 'archive', '--format=tar.gz', revision], cwd=repo, stdout=stream, check=True)
 extract(archive, source)
-env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_'))}
+env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_', 'LD_'))}
 env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
            GIT_ATTR_NOSYSTEM='1', GIT_VERSION=lock['version'],
            GIT_BUILT_FROM_COMMIT=revision, GIT_DATE=run(['git', 'show', '-s', '--format=%cs', revision], cwd=repo),
@@ -115,6 +115,8 @@ for path in sorted(root.rglob('*')):
             symbol.parent.mkdir(parents=True, exist_ok=True)
             run(['objcopy', '--only-keep-debug', path, str(symbol) + '.debug'])
             run(['strip', '--strip-debug', path])
+if host == 'linux':
+    subprocess.run(['python3', str(HERE / 'bundle-linux.py'), str(root), '--output', str(out)], check=True)
 manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 recipe_files={p.name: sha256(p) for p in sorted(HERE.iterdir()) if p.is_file()},
                 recipe_revision=run(['git', 'rev-parse', 'HEAD'], cwd=repo),

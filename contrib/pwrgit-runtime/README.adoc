@@ -1,0 +1,121 @@
+= PwrGit application runtime
+
+This distribution builds Git's C source from `huntharo/git`. Dugite remains
+the apps' JavaScript execution wrapper. The portable packaging recipes are
+adapted from `desktop/dugite-native`, identified in `build-lock.json`.
+The JavaScript Dugite fork does not compile Git.
+
+The first frozen source is PR #2, exactly
+`d5db8771ce659822bd9fbb0911b600de1339fea3`, with version
+`2.56.0-dev-pwrgit.1`. This is a custom development version, not an upstream
+2.56 release. The CRLF extension in PR #3, profiling changes, upstream mmap
+investigations, and existing-worktree re-sharing/reset changes are absent.
+They require a separately identified source freeze and version.
+
+== Local trial
+
+The already-installed ARM64 trial is independent of these release builds:
+
+----
+~/.local/share/pwrgit/runtimes/git/2.56.0-dev-pwrgit.1-d5db877/darwin-arm64/bin/git
+----
+
+PwrAgent's Settings > Git > Manual path selects that executable. The user
+verified Custom path In use, Git `2.56.0-dev-pwrgit.1`, Git LFS `3.7.1`,
+and the ad-hoc signature label. Rollback is Bundled Git in the same section.
+`PWRAGENT_GIT_PATH` takes precedence if set. The one-to-two-day user trial
+is pending; selecting the executable does not complete it.
+
+Release builds never replace that directory, change app settings, replace
+global Git, or restart user tasks. The user's separately requested global
+`checkout.reflink=true` remains in effect. Older Git versions ignore it.
+
+== Build and validate
+
+Run with Python 3.12 or newer, a native C toolchain, and the platform's SDK
+or headers. Every build downloads only checksum-pinned LFS inputs.
+
+----
+python3 contrib/pwrgit-runtime/build.py --arch arm64 --output /tmp/git-arm64
+python3 contrib/pwrgit-runtime/build.py --arch x64 --output /tmp/git-x64
+python3 contrib/pwrgit-runtime/universal.py \
+  --arm64 /tmp/git-arm64/stage/pwrgit --x64 /tmp/git-x64/stage/pwrgit \
+  --output /tmp/git-universal
+python3 contrib/pwrgit-runtime/verify.py /tmp/git-universal
+python3 contrib/pwrgit-runtime/smoke.py /tmp/git-universal \
+  --test-tool /tmp/git-arm64/source/t/helper/test-tool \
+  --require-sharing --https --report /tmp/git-smoke.json
+----
+
+The CI workflow builds Linux x64/ARM64 in a digest-pinned Ubuntu 22.04
+container against an immutable Ubuntu archive snapshot. It bundles
+non-glibc libraries with relative ELF RPATHs, their notices, exact source
+package inputs, version inventory, and checksums. glibc 2.35, the system
+CA store, `/bin/sh`, and SSH remain host requirements. Linux tests cover
+relocation, the baseline ABI, ordinary fallback, and actual XFS/btrfs sharing.
+Windows is intentionally excluded from this release at the user's request.
+
+Each runtime includes helpers, templates, Git LFS, `COPYING`, LFS's MIT
+license, `SOURCES`, build provenance, and a sealed file inventory. macOS
+includes `git-credential-osxkeychain`; neither POSIX package includes GCM's
+.NET runtime. Existing credential configuration and app-supplied credentials
+remain available. Optional Perl commands, Tcl/Tk GUI, gettext translations
+and Rust are omitted. Git itself retains primary SHA1_DC protections;
+macOS explicitly enables Apple CommonCrypto only for secondary hashing.
+
+Separate symbol archives contain Git's debugging information. Upstream's
+prebuilt LFS input does not provide separate symbols; this is recorded in
+the manifest. Matching Git source, LFS source, recipe sources and dependency
+sources accompany the runtime. Input checksums and exact flags identify a
+build; bit-for-bit reproducibility of Apple's timestamped signatures is not
+claimed.
+
+macOS 13 is the deployment target. A successful build or newer-OS smoke
+test is not proof of execution on macOS 13. The manifest records this as
+`minimum_os_tested=false` until there is actual evidence from that OS.
+
+== Signing and immutable reuse
+
+`.github/workflows/pwrgit-runtime.yml` separates builds from the protected
+`apple-signing` job. It uses the established Codex/Grok PwrDrvr temporary
+keychain and `CSC_LINK`/`CSC_KEY_PASSWORD` credentials, plus the existing
+Apple API notarization credentials. No new certificate or trust scheme is
+introduced. The environment requires the established reviewers and `v*`
+tag-only deployment policy. The sign job has no checkout or dependency
+installation and compares its input with an independently emitted job digest.
+
+All `strip` and `lipo` operations finish before Developer ID signing. Every
+nested Mach-O is signed with hardened runtime and verified against Team ID
+`T44CNHC4UH`. A ZIP of that final tree is submitted to Apple; an Accepted
+receipt is required. Individual CLI files and tarballs cannot be stapled.
+The receipt identifies Apple's notarization ticket; each enclosing app still
+needs its own signing, notarization and staple.
+
+Both macOS architecture legs of both apps must stage the same final universal
+archive. `@electron/universal` 2.0.3 detects already-universal Mach-O files
+and skips `lipo`. A narrowly scoped Git-directory signing exclusion prevents
+electron-builder from replacing those nested signatures. App packaging must
+verify the complete sealed Git inventory and all nested signatures after
+merging and signing. No broad signing exclusion is permitted.
+
+`stage-runtime.mjs` is the shared consumer implementation. A checked-in
+manifest pins the release URL, archive SHA256, source SHA, inventory SHA256
+and signing state. Downloads are verified before extraction, cached by
+digest, and staged atomically. A valid cached archive works offline. A failed
+download, checksum, signature or inventory check is fatal; it cannot select
+system Git or an upstream Dugite archive. Release assets are immutable:
+publish a new identified build instead of replacing an approved archive.
+
+== Correctness scope
+
+The content-asserting smoke tests cover workers 1/8, Git LFS smudge/pointers,
+external filters, CRLF conversion, sparse checkout, submodules, actual
+block sharing, ordinary disabled fallback, no-op preservation, dirty donor
+fallback, independent writes, helper discovery, templates and real HTTPS.
+The focused source suites are `t2410` through `t2414`.
+
+This source follows Git's ordinary index/stat trust. Known APFS writable-mmap
+edits can remain hidden from those checks and can be imported from a donor.
+Passing these cases does not prove equality for arbitrary hidden edits or
+concurrent writers. Packaging adds no mandatory readback or hashing to Git
+checkout. Its archive/inventory hashing verifies the shipped runtime itself.
