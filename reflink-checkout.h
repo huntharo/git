@@ -56,4 +56,20 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 int reflink_source_spec(struct repository *r, const char *prefix,
 			const char *arg, struct strbuf *out);
 
+struct reflink_reshare_options {
+	const char *source;
+	int dry_run;
+	int porcelain;
+	int nul_termination;
+	int verbose;
+	int quiet;
+};
+
+/* Production config/marker enablement, including the explicit false switch. */
+int reflink_checkout_enabled(struct repository *r);
+
+/* Explicit physical optimization; never changes logical bytes or the index. */
+int reflink_reshare_worktree(struct repository *r,
+			     const struct reflink_reshare_options *opts);
+
 #endif /* REFLINK_CHECKOUT_H */
