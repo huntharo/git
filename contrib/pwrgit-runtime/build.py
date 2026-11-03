@@ -41,13 +41,16 @@ with archive.open('wb') as stream:
     subprocess.run(['git', 'archive', '--format=tar.gz', revision], cwd=repo, stdout=stream, check=True)
 extract(archive, source)
 env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_', 'LD_'))}
+for name in ('MAKEFLAGS', 'MFLAGS', 'CFLAGS', 'CPPFLAGS', 'LDFLAGS', 'CC', 'CXX', 'AR', 'RANLIB',
+             'OPENSSL_SHA1', 'BLK_SHA1', 'APPLE_COMMON_CRYPTO_SHA1', 'DC_SHA1', 'DC_SHA1_EXTERNAL'):
+    env.pop(name, None)
 env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
            GIT_ATTR_NOSYSTEM='1', GIT_VERSION=lock['version'],
            GIT_BUILT_FROM_COMMIT=revision, GIT_DATE=run(['git', 'show', '-s', '--format=%cs', revision], cwd=repo),
            SOURCE_DATE_EPOCH=run(['git', 'show', '-s', '--format=%ct', revision], cwd=repo))
 flags = ['NO_RUST=1', 'NO_GETTEXT=1', 'NO_TCLTK=1', 'NO_PERL=1',
          'RUNTIME_PREFIX=YesPlease', 'INSTALL_SYMLINKS=YesPlease', 'prefix=/pwrgit',
-         'CFLAGS=-g -O2 -Wall -fstack-protector-strong']
+         f'CFLAGS=-g -O2 -Wall -fstack-protector-strong -ffile-prefix-map={source}=/usr/src/pwrgit']
 if host == 'darwin':
     env['MACOSX_DEPLOYMENT_TARGET'] = lock['macos_deployment_target']
     flags += ['NO_HOMEBREW=1', 'NO_DARWIN_PORTS=1', 'CURL_CONFIG=/usr/bin/curl-config',
@@ -115,6 +118,7 @@ for path in sorted(root.rglob('*')):
             symbol.parent.mkdir(parents=True, exist_ok=True)
             run(['objcopy', '--only-keep-debug', path, str(symbol) + '.debug'])
             run(['strip', '--strip-debug', path])
+            run(['objcopy', '--add-gnu-debuglink=' + str(symbol) + '.debug', path])
 if host == 'linux':
     subprocess.run(['python3', str(HERE / 'bundle-linux.py'), str(root), '--output', str(out), '--arch', a.arch], check=True)
     with (root / 'SOURCES').open('a') as notices:
@@ -126,7 +130,7 @@ manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 recipe_files={p.name: sha256(p) for p in sorted(HERE.iterdir()) if p.is_file()},
                 recipe_revision=run(['git', 'rev-parse', 'HEAD'], cwd=repo),
                 platform=host, architecture=a.arch, flags=flags,
-                primary_sha1='SHA1_DC', secondary_sha1='Apple CommonCrypto' if host == 'darwin' else 'builtin',
+                primary_sha1='SHA1_DC', secondary_sha1='Apple CommonCrypto' if host == 'darwin' else 'upstream default; no native secondary selected',
                 signing='ad-hoc' if host == 'darwin' else 'unsigned', notarized=False,
                 lfs=dependency, lfs_source=lock['lfs_source'], lfs_version=lock['lfs']['version'].lstrip('v'),
                 source_archive_sha256=sha256(archive), recipe_reference=lock['recipe_reference'],
@@ -134,6 +138,7 @@ manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 minimum_os_tested=False, build_host=platform.platform(),
                 source_date_epoch=env['SOURCE_DATE_EPOCH'],
                 compiler=run(['clang' if host == 'darwin' else 'cc', '--version']),
+                sdk=run(['xcrun', '--show-sdk-version']) if host == 'darwin' else None,
                 lfs_debug_symbols='Not provided in upstream prebuilt release',
                 optional_components_omitted=['Perl commands', 'Tcl/Tk GUI', 'gettext translations', 'Rust', 'GCM'])
 write_json(root / 'pwrgit-build.json', manifest)

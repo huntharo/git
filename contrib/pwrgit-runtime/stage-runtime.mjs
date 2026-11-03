@@ -15,8 +15,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const teamRequirement = '=anchor apple generic and certificate leaf[subject.OU] = "T44CNHC4UH"';
 const hash = (data) => createHash("sha256").update(data).digest("hex");
-const checked = (command, args) => {
-  const r = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, windowsHide: true });
+const checked = (command, args, options = {}) => {
+  const r = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, windowsHide: true, ...options });
   if (r.error || r.status !== 0) throw new Error(`${command} failed: ${r.error?.message ?? r.stderr}`);
   return r.stdout.trim();
 };
@@ -44,7 +44,7 @@ export function readRuntimeManifest(path, platform, arch) {
   return { manifest: m, asset, key };
 }
 
-export function verifyRuntime(root, pin, { requireSigned = true } = {}) {
+export function verifyRuntime(root, pin, { requireSigned = true, probe = true } = {}) {
   root = realpathSync(root);
   const inventoryPath = join(root, "runtime-files.json");
   const inventoryBytes = readFileSync(inventoryPath);
@@ -94,6 +94,22 @@ export function verifyRuntime(root, pin, { requireSigned = true } = {}) {
       }
       checked("/usr/bin/codesign", ["--verify", "--all-architectures", "--strict",
         ...(requireSigned ? ["--test-requirement", teamRequirement] : []), file]);
+    }
+  }
+  if (probe) {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(GIT_|DYLD_|LD_)/.test(name)));
+    env.GIT_CONFIG_GLOBAL = "/dev/null";
+    env.GIT_TERMINAL_PROMPT = "0";
+    env.PATH = join(root, "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin";
+    const git = join(root, "bin", "git");
+    const buildOptions = checked(git, ["version", "--build-options"], { env }).split(/\r?\n/);
+    if (!buildOptions.includes("SHA-1: SHA1_DC") || !buildOptions.includes(`built from commit: ${m.source_revision}`)) {
+      throw new Error("Executable Git source revision or primary SHA1_DC protection changed");
+    }
+    if (checked(git, ["--version"], { env }) !== `git version ${m.version}`
+        || checked(git, ["--exec-path"], { env }) !== join(root, "libexec", "git-core")
+        || !checked(git, ["lfs", "version"], { env }).startsWith(`git-lfs/${m.lfs_version} `)) {
+      throw new Error("Packaged custom Git, LFS or relocated helper resolution failed");
     }
   }
   return m;
