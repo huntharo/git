@@ -67,8 +67,9 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-relocated-') as tmp:
     run([git, 'init', repo], env=env)
     assert (repo / '.git/hooks/pre-commit.sample').is_file()
     if platform.system() == 'Darwin':
-        # Empty input tests helper launch without retrieving or storing credentials.
-        run([git, 'credential-osxkeychain', 'get'], input=b'\n', env=env)
+        # The helper ignores unknown actions after parsing input. An empty get
+        # can query the host keychain and prompt, so use a launch-only action.
+        run([git, 'credential-osxkeychain', 'pwrgit-launch-check'], input=b'\n', env=env)
     # Resolution must be through the relocated exec path. This command does not
     # make a network request and fails after the helper validates the protocol.
     try:
