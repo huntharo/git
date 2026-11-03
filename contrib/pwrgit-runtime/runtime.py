@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Shared, fail-closed archive and payload operations for the Git distribution."""
+import copy
 import hashlib
 import json
 import os
@@ -47,9 +48,30 @@ def download(url, checksum, destination):
 
 
 def extract(archive, destination):
-    # Python's data filter rejects escaping links, devices and traversal.
+    # Ubuntu 22.04's Python 3.10 data filter resolves symbolic-link targets
+    # against the extraction root instead of the link's parent directory.
+    # Keep its path/type/ownership checks, but validate symlink targets with
+    # their actual filesystem semantics. Hard links remain root-relative.
+    def data_filter(member, dest):
+        if not member.issym():
+            return tarfile.data_filter(member, dest)
+        regular = copy.copy(member)
+        regular.type, regular.linkname = tarfile.REGTYPE, ''
+        filtered = tarfile.data_filter(regular, dest)
+        root = Path(dest).resolve()
+        path = root / filtered.name
+        if path.resolve() == root:
+            raise tarfile.OutsideDestinationError(member, str(path))
+        if os.path.isabs(member.linkname):
+            raise tarfile.AbsoluteLinkError(member)
+        target = (path.parent / member.linkname).resolve()
+        if not target.is_relative_to(root):
+            raise tarfile.LinkOutsideDestinationError(member, str(target))
+        filtered.type, filtered.linkname, filtered.mode = member.type, member.linkname, None
+        return filtered
+
     with tarfile.open(archive) as tar:
-        tar.extractall(destination, filter='data')
+        tar.extractall(destination, filter=data_filter)
 
 
 def is_macho(path):

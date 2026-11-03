@@ -18,6 +18,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 git config --global --add safe.directory /src
 cd /src
 export PYTHONDONTWRITEBYTECODE=1
+python3 -m unittest discover -s contrib/pwrgit-runtime -p test_runtime.py
 python3 contrib/pwrgit-runtime/build.py --arch "$arch" --output /out/build
 mkdir '/out/relocated runtime'
 tar -xzf /out/build/*-candidate.tar.gz -C '/out/relocated runtime'
