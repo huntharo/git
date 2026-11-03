@@ -51,7 +51,22 @@ for path in sorted(root.rglob('*')):
         original = Path(location).resolve()
         if name in libraries and libraries[name]['original_sha256'] != sha256(original):
             raise ValueError(f'Conflicting dependency: {name}')
-        package_name = run(['dpkg-query', '-S', str(original)]).split(': /', 1)[0]
+        # On merged-/usr systems dpkg can record /lib while realpath returns
+        # /usr/lib. Query only aliases that resolve to this exact library.
+        candidates = [original]
+        if original.is_relative_to('/usr/lib') or original.is_relative_to('/usr/lib64'):
+            candidates.append(Path('/') / original.relative_to('/usr'))
+        candidates.append(Path(location))
+        package_name = None
+        for candidate in dict.fromkeys(candidates):
+            if candidate.resolve() != original:
+                continue
+            owner = subprocess.run(['dpkg-query', '-S', str(candidate)], capture_output=True, text=True)
+            if owner.returncode == 0:
+                package_name = owner.stdout.split(': /', 1)[0]
+                break
+        if package_name is None:
+            raise ValueError(f'No installed Debian package owns dependency: {original}')
         metadata = run(['dpkg-query', '-W', '-f=${source:Package}\t${source:Version}\t${Version}', package_name]).split('\t')
         source_name, source_version, binary_version = metadata
         libraries[name] = dict(original=str(original), original_sha256=sha256(original),
