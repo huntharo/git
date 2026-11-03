@@ -36,6 +36,9 @@ revision = lock['source']['revision']
 repo = HERE.parents[1]
 if run(['git', 'rev-parse', revision], cwd=repo) != revision:
     raise ValueError('Source must be a full immutable commit SHA')
+source_ref = lock['source']['ref']
+if run(['git', 'rev-parse', '--verify', source_ref + '^{commit}'], cwd=repo) != revision:
+    raise ValueError('Frozen source ref does not match the exact pinned commit')
 archive = out / 'git-source.tar.gz'
 with archive.open('wb') as stream:
     subprocess.run(['git', 'archive', '--format=tar.gz', revision], cwd=repo, stdout=stream, check=True)
@@ -93,6 +96,7 @@ with tarfile.open(lfs_source) as t:
 (root / 'etc/gitconfig').write_text('[checkout]\n\treflink = true\n')
 (root / 'SOURCES').write_text(
     f'Git {lock["version"]}: {lock["source"]["repository"]}/tree/{revision}\n'
+    f'Frozen source ref: {source_ref}\n'
     'Git is a separate GPL-2.0-only command-line program. Enclosing apps retain their licenses.\n'
     f'Complete matching source: git-source-{sha256(archive)}.tar.gz beside this release.\n'
     f'Git LFS {lock["lfs"]["version"]}: https://github.com/git-lfs/git-lfs/tree/{lock["lfs"]["version"]}\n'
@@ -127,6 +131,7 @@ if host == 'linux':
                       'Original Debian copyright notices and full common license texts are in share/licenses/dependencies.\n'
                       'Only ELF RPATH was changed for relocation; no dependency source was modified.\n')
 manifest = dict(schema=1, version=lock['version'], source_revision=revision,
+                source_ref=source_ref,
                 recipe_files={p.name: sha256(p) for p in sorted(HERE.iterdir()) if p.is_file()},
                 recipe_revision=run(['git', 'rev-parse', 'HEAD'], cwd=repo),
                 platform=host, architecture=a.arch, flags=flags,

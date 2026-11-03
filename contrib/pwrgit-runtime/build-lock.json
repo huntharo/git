@@ -3,6 +3,7 @@
   "version": "2.56.0-dev-pwrgit.1",
   "source": {
     "repository": "https://github.com/huntharo/git",
+    "ref": "refs/tags/pwrgit-source/2.56.0-dev-pwrgit.1",
     "revision": "d5db8771ce659822bd9fbb0911b600de1339fea3"
   },
   "recipe_reference": {

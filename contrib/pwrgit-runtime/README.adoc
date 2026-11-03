@@ -12,6 +12,25 @@ The first frozen source is PR #2, exactly
 investigations, and existing-worktree re-sharing/reset changes are absent.
 They require a separately identified source freeze and version.
 
+== Fork branches and upstream submissions
+
+`master` tracks upstream Git. `pwrgit` is this fork's default release branch
+and carries the distribution changes. When updating upstream, replay the
+fork's commits onto the selected upstream revision and validate compatibility.
+Keep upstream-submission branches and their PRs isolated and open even after
+their changes have been replayed into the release branch. Fork integration
+PRs target `pwrgit`; they do not replace those upstream candidates.
+
+The packaging recipe's branch and the C source selected in `build-lock.json`
+are independent. Moving the packaging commits to `pwrgit` does not change the
+initial exact-PR2 source freeze above. The fixed source tag
+`pwrgit-source/2.56.0-dev-pwrgit.1` retains that commit independently of any
+upstream-candidate branch rebases; builds require it to match the pinned SHA.
+Replayed feature changes or a newer
+upstream base enter a runtime only through a separately identified, tested
+source revision and version. Published archives and installed trial versions
+remain immutable.
+
 == Local trial
 
 The already-installed ARM64 trial is independent of these release builds:
