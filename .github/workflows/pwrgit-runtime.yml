@@ -276,11 +276,18 @@ jobs:
           set -euo pipefail
           # No --clobber and no existing-release edits: approved assets stay immutable.
           gh release create "$GITHUB_REF_NAME" --verify-tag --draft --prerelease --title "Git ${GITHUB_REF_NAME#v}" --notes-file release/RELEASE-NOTES.txt release/*
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" > uploaded.json
+          # GitHub does not resolve unpublished drafts through releases/tags.
+          # Require exactly one matching draft, then verify and publish by ID.
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | select(.tag_name == env.GITHUB_REF_NAME and .draft) | .id')"
+          [[ "$release_id" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > uploaded.json
           python3 - <<'PY'
-          import hashlib,json,pathlib
-          assets={a['name']:a for a in json.load(open('uploaded.json'))['assets']}
+          import hashlib,json,os,pathlib
+          release=json.load(open('uploaded.json'))
+          assert release['draft'] and release['tag_name']==os.environ['GITHUB_REF_NAME']
+          assets={a['name']:a for a in release['assets']}
+          assert set(assets)=={p.name for p in pathlib.Path('release').iterdir()}
           for p in pathlib.Path('release').iterdir():
               assert assets[p.name]['digest']=='sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(),p.name
           PY
-          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false -F prerelease=true -f make_latest=false
