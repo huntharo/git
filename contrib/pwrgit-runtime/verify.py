@@ -8,7 +8,7 @@ import platform
 import re
 import tempfile
 
-from runtime import is_macho, run, verify_inventory, write_json
+from runtime import is_macho, ldd_dependencies, run, verify_inventory, write_json
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('root', type=Path)
@@ -46,7 +46,7 @@ for path in sorted(root.rglob('*')):
             assert not versions or max(versions) <= (2, 35), (path, versions)
             deps = run(['ldd', path], env=env) if 'NEEDED' in run(['readelf', '-d', path]) else 'static'
             assert 'not found' not in deps, (path, deps)
-            for name, target in re.findall(r'(\S+) => (/\S+)', deps):
+            for name, target in ldd_dependencies(deps):
                 if not re.match(r'lib(c|m|dl|rt|pthread|resolv|util|anl)\.so\.', name):
                     assert Path(target).resolve().is_relative_to(root), (path, name, target)
             executables[path.relative_to(root).as_posix()] = {'dependencies': deps, 'glibc_versions': sorted(versions)}

@@ -4,7 +4,7 @@ import tarfile
 import tempfile
 import unittest
 
-from runtime import extract, seal, verify_inventory
+from runtime import extract, ldd_dependencies, seal, verify_inventory
 
 
 class InventoryTests(unittest.TestCase):
@@ -102,6 +102,22 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaises(tarfile.FilterError):
             extract(archive, self.root)
         self.assertFalse((self.root.parent / 'link').is_symlink())
+
+
+class DependencyTests(unittest.TestCase):
+    def test_paths_with_spaces_and_parentheses(self):
+        self.assertEqual(ldd_dependencies('''
+        linux-vdso.so.1 (0x0000ffff)
+        libz.so.1 => /out/relocated runtime (test)/lib/libz.so.1 (0x0000aaaa)
+        libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000bbbb)
+        /lib/ld-linux-aarch64.so.1 (0x0000cccc)
+'''), [('libz.so.1', '/out/relocated runtime (test)/lib/libz.so.1'),
+       ('libc.so.6', '/lib/aarch64-linux-gnu/libc.so.6')])
+
+    def test_missing_or_malformed_mapping_is_rejected(self):
+        for output in ('libz.so.1 => not found', 'libz.so.1 => /out/lib/libz.so.1'):
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                ldd_dependencies(output)
 
 
 if __name__ == '__main__':

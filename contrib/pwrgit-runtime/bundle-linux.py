@@ -13,7 +13,7 @@ import re
 import shutil
 import subprocess
 
-from runtime import package, run, sha256, write_json
+from runtime import ldd_dependencies, package, run, sha256, write_json
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('root', type=Path)
@@ -41,11 +41,7 @@ for path in sorted(root.rglob('*')):
     result = subprocess.run(['ldd', str(path)], capture_output=True, text=True)
     if 'not found' in result.stdout:
         raise ValueError(f'Unresolved dependency: {path}: {result.stdout}')
-    for line in result.stdout.splitlines():
-        match = re.match(r'\s*(\S+) => (/\S+) ', line)
-        if not match:
-            continue
-        name, location = match.groups()
+    for name, location in ldd_dependencies(result.stdout):
         if glibc.match(name):
             continue
         original = Path(location).resolve()

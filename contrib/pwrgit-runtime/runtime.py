@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tarfile
@@ -17,6 +18,18 @@ MACHO = {b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xca\xfe\xba\xbe', b'\xbe\x
 
 def run(args, **kwargs):
     return subprocess.check_output([str(x) for x in args], **kwargs).decode().strip()
+
+
+def ldd_dependencies(output):
+    dependencies = []
+    for line in output.splitlines():
+        if '=>' not in line:
+            continue
+        match = re.fullmatch(r'\s*(\S+)\s+=>\s+(/.+?)\s+\(0x[0-9a-fA-F]+\)\s*', line)
+        if not match:
+            raise ValueError(f'Unresolved or malformed ldd dependency: {line}')
+        dependencies.append(match.groups())
+    return dependencies
 
 
 def sha256(path):
