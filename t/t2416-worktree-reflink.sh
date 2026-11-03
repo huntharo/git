@@ -353,7 +353,7 @@ test_expect_success RESHARE 'same-size normalized equivalents still require kern
 	test_not_shared mixed-source/file mixed-target/file
 '
 
-for change in target-write target-replace source-write
+for change in target-write target-replace source-write source-replace
 do
 	test_expect_success RESHARE "concurrent $change preserves actual bytes and named files" '
 		test_when_finished "git -C source -c checkout.reflink=false reset -q --hard base; reflink_stable_source source" &&
@@ -365,6 +365,7 @@ do
 		target-write) printf Z | dd of=plain bs=1 count=1 conv=notrunc ;;
 		target-replace) mv plain ../held-original; echo replacement >plain ;;
 		source-write) printf Z | dd of=../source/plain bs=1 count=1 conv=notrunc ;;
+		source-replace) mv ../source/plain ../held-source; echo replacement >../source/plain ;;
 		esac
 		EOF
 		GIT_TEST_REFLINK_RESHARE_HOOK="../race-hook" git -C target worktree reflink --porcelain >out &&
@@ -372,6 +373,7 @@ do
 		target-write) printf Z >expect && test_copy_bytes 1 <target/plain >actual && test_cmp expect actual ;;
 		target-replace) echo replacement >expect && test_cmp expect target/plain && test_cmp source/plain held-original ;;
 		source-write) git -C source show base:plain >expect && test_cmp expect target/plain ;;
+		source-replace) test_cmp held-source target/plain && test_grep replacement source/plain ;;
 		esac &&
 		test_grep "^reason \(representation-differs\|concurrent-change\)$" out
 	'
@@ -448,6 +450,41 @@ break" &&
 	printf "path %s\0" "$name" >needle &&
 	perl -0777 -e '\''open my $f, "<", "needle" or die; local $/; my $n=<$f>; my $o=<>; exit(index($o,$n)<0)'\'' out &&
 	test_shared "names-source/$name" "names-target/$name"
+'
+
+test_expect_success RESHARE 'multiple native ranges and a short EOF preserve and share all bytes' '
+	test_when_finished "rm -rf large-source large-target" &&
+	git init -q large-source && git -C large-source config checkout.reflink false &&
+	test-tool genrandom large 16777339 >large-source/file &&
+	git -C large-source add . && git -C large-source commit -qm large &&
+	reflink_stable_source large-source &&
+	git -C large-source worktree add -q --detach --no-reflink ../large-target HEAD &&
+	reflink_stable_source large-target &&
+	git -C large-target worktree reflink --porcelain >out &&
+	test_cmp large-source/file large-target/file &&
+	test_field content-checked 0 out &&
+	test_shared large-source/file large-target/file &&
+	test_field private-after 0 out
+'
+
+test_expect_success RESHARE,SYMLINKS 'tracked symlinks and gitlinks are skipped without recursion' '
+	test_when_finished "rm -rf entries-source entries-target" &&
+	git init -q entries-source && git -C entries-source config checkout.reflink false &&
+	make_blob_file entries-source/plain 64 &&
+	ln -s plain entries-source/link &&
+	git -C entries-source add . &&
+	git -C entries-source update-index --add --cacheinfo 160000,$(git -C source rev-parse HEAD),sub &&
+	git -C entries-source commit -qm entries &&
+	mkdir entries-source/sub &&
+	reflink_stable_source entries-source &&
+	git -C entries-source worktree add -q --detach --no-reflink ../entries-target HEAD &&
+	reflink_stable_source entries-target &&
+	git -C entries-target worktree reflink --porcelain >out &&
+	test_field scanned 3 out &&
+	test_field skipped 2 out &&
+	test -h entries-target/link &&
+	test_path_is_dir entries-target/sub &&
+	test_shared entries-source/plain entries-target/plain
 '
 
 test_done

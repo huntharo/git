@@ -1053,7 +1053,7 @@ int reflink_reshare_worktree(struct repository *r,
 		struct cache_entry *ce = r->index->cache[i];
 		const struct cache_entry *source_ce = NULL;
 		struct reshare_result result = { .status = "skipped", .reason = "ineligible" };
-		struct stat before, after, source_before, source_after, named;
+		struct stat before, after, source_before, source_after, source_named, named;
 		struct conv_attrs ca;
 		struct object_id oid;
 		int fd = -1, src_fd = -1, write_fd = -1, hash_fd, ret, changed;
@@ -1182,6 +1182,9 @@ int reflink_reshare_worktree(struct repository *r,
 			if (fstat(fd, &after) || !same_file_stat(&before, &after) ||
 			    fstat(src_fd, &source_after) ||
 			    donor_changed(rc.source_index, source_ce, &source_after) ||
+			    !same_file_stat(&source_before, &source_after) ||
+			    lstat(donor.buf, &source_named) ||
+			    !same_file_stat(&source_before, &source_named) ||
 			    lstat(path.buf, &named) || named.st_dev != before.st_dev ||
 			    named.st_ino != before.st_ino) {
 				result.reason = "concurrent-change";
@@ -1225,7 +1228,10 @@ int reflink_reshare_worktree(struct repository *r,
 		if (fstat(fd, &after) || !same_file_stat(&before, &after) ||
 		    lstat(path.buf, &named) || !same_file_stat(&before, &named) ||
 		    fstat(src_fd, &source_after) ||
-		    donor_changed(rc.source_index, source_ce, &source_after)) {
+		    donor_changed(rc.source_index, source_ce, &source_after) ||
+		    !same_file_stat(&source_before, &source_after) ||
+		    lstat(donor.buf, &source_named) ||
+		    !same_file_stat(&source_before, &source_named)) {
 			result.reason = "concurrent-change";
 			goto record;
 		}
@@ -1279,7 +1285,10 @@ int reflink_reshare_worktree(struct repository *r,
 		    !same_file_stat(&before, &after) ||
 		    named.st_dev != before.st_dev || named.st_ino != before.st_ino ||
 		    fstat(src_fd, &source_after) ||
-		    donor_changed(rc.source_index, source_ce, &source_after)) {
+		    donor_changed(rc.source_index, source_ce, &source_after) ||
+		    !same_file_stat(&source_before, &source_after) ||
+		    lstat(donor.buf, &source_named) ||
+		    !same_file_stat(&source_before, &source_named)) {
 			result.reason = "concurrent-change";
 			goto record;
 		}
