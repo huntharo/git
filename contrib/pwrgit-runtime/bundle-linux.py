@@ -18,12 +18,14 @@ from runtime import package, run, sha256, write_json
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('root', type=Path)
 p.add_argument('--output', type=Path, required=True)
+p.add_argument('--arch', choices=['x64', 'arm64'], required=True)
 a = p.parse_args()
 root = a.root.resolve()
 lib = root / 'lib'
 lib.mkdir()
 notices = root / 'share/licenses/dependencies'
 notices.mkdir(parents=True)
+shutil.copytree('/usr/share/common-licenses', notices / 'common-licenses', symlinks=False)
 sources = a.output / 'library-sources'
 sources.mkdir()
 glibc = re.compile(r'^(lib(c|m|dl|rt|pthread|resolv|util|anl)\.so\.|ld-linux|ld64)')
@@ -74,5 +76,5 @@ for name, metadata in libraries.items():
 write_json(root / 'linux-libraries.json', dict(schema=1, baseline_glibc='2.35', libraries=libraries,
            source_files={p.name: sha256(p) for p in sorted(sources.iterdir()) if p.is_file()}))
 (a.output / 'linux-packages.txt').write_text(run(['dpkg-query', '-W', '-f=${binary:Package}\t${Version}\n']) + '\n')
-package(sources, a.output / 'linux-library-sources.tar.gz')
+package(sources, a.output / f'linux-library-sources-{a.arch}.tar.gz')
 print(json.dumps({'bundled_libraries': len(libraries), 'glibc_baseline': '2.35'}))

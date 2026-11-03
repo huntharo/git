@@ -81,7 +81,7 @@ jobs:
             ${{ runner.temp }}/output/build/*-symbols.tar.gz*
             ${{ runner.temp }}/output/build/git-source.tar.gz
             ${{ runner.temp }}/output/build/git-lfs-source.tar.gz
-            ${{ runner.temp }}/output/build/linux-library-sources.tar.gz*
+            ${{ runner.temp }}/output/build/linux-library-sources-*.tar.gz*
             ${{ runner.temp }}/output/build/linux-packages.txt
             ${{ runner.temp }}/output/*.json
   macos:
