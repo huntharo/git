@@ -1,0 +1,237 @@
+EOL-aware reflink checkout: validation and measurements
+======================================================
+
+Scope and source
+----------------
+
+This extension starts at PR #2's verified draft/open head,
+`d5db8771ce659822bd9fbb0911b600de1339fea3` (`feat/reflink-native-checks`),
+whose master base is `50fe5cc63f9cd6e89b87a2c9ccf96a444f4cfdb7`.
+The implementation is `1f0db625ed`; this report and the benchmark script
+follow it. PR #1, PR #2, their history, the installed trial runtime and
+application settings were not changed. Only this thread's isolated
+worktree and scratch trees were used for mutable builds and fixtures.
+
+The scope is EOL-only CRLF output. Matching converted donors share data;
+no-op recipients keep PR #2's no-readback fast path. Recipient filters,
+ident and encodings remain on the ordinary writer. Source configured
+filters and encodings remain conservatively ineligible. Required/process/
+delayed filters and LFS are not speculatively invoked or assumed to be
+deterministic. No hash implementation, source index, or fabricated stat
+metadata is introduced.
+
+The implementation compares a converted clone with the ordinary recipient
+output, using streaming explicit EOL conversion or in-core auto detection.
+A comparison is necessary here because the index has no physical-EOL or
+historical-conversion field. The source's current rules, a clean status,
+and the same blob do not establish fresh checkout bytes. Reading the
+clone after cloning avoids a separate comparison-to-clone donor race.
+Unconverted candidates retain PR #2's stat-invisible-edit/APFS mmap limits;
+this extension does not give them PR #1's stronger donor verification.
+
+Independent natural-aging reproduction
+---------------------------------------
+
+An independent fixture used `file.bat` with 20,000 `echo content` lines.
+It used real aging (1.1 seconds), ordinary
+`update-index --refresh --force-write-index`, and no timestamp rewriting.
+Before/after refresh inode, mtime_ns, ctime_ns and size were asserted equal,
+and both donors were clean. Fresh ordinary and candidate outputs were
+asserted to contain exactly 20,000 CRLF lines (280,000 bytes).
+
+[cols="3,1,1,1",options="header"]
+|===
+|Donor history |Donor bytes |Fresh output |Candidate sharing
+|CRLF checkout under `text eol=crlf` |280,000 CRLF |280,000 CRLF |Shared
+|LF checkout; commit only attrs change to `text eol=crlf` |260,000 LF |280,000 CRLF |Discard clone; ordinary write
+|===
+
+Both fresh outputs had SHA-256
+`4ab6ef1e2b2dba2eaac833e88be65c044c5fdce90da734bc7f4b3f4fa6fb6821`.
+The local harness and raw records are retained under
+`/private/tmp/reflink-converted-mw0yw26e/reproduce.py` and
+`/private/tmp/reflink-converted-mw0yw26e/natural-reproducer/results.json`.
+The regression suite also covers the reverse attributes change and
+explicitly distinct source/recipient worktree configuration. Fresh
+checkout is the oracle: normal reset/restore of an existing clean file
+may preserve an older representation.
+
+Builds and validation
+---------------------
+
+The APFS host is an ARM64 M5 Max running Darwin 27.0.0. Native builds used:
+
+----
+make -j4 DEVELOPER=1 NO_RUST=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease
+----
+
+The candidate source and a separate pinned PR #2 archive were built with
+the same compiler options (`-g -O2`, developer warnings as errors).
+Primary SHA-1 remains SHA1_DC; SHA-256 remains SHA256_BLK. No fast secondary
+SHA-1 override was enabled. CFLAGS, LDFLAGS, version/build-options and the
+SHA-256 of each build's `reflink-checkout.c` are recorded by the benchmark.
+
+Linux validation uses the existing Ubuntu 24.04 ARM64 container on
+Linux 7.0.14-linuxkit, with four CPUs and 6 GiB RAM. A distinct source copy
+was built under `/tmp/conversion-mw0yw26e/build` with:
+
+----
+make -j4 DEVELOPER=1 NO_RUST=1 NO_GETTEXT=1 NO_TCLTK=1
+----
+
+Tests run as UID/GID 1000:1000 on existing real `/xfs` (`reflink=1`) and
+`/btrfs` loop-device mounts. No remounts, new VMs or paid machines were
+provisioned. Source and recipient fixtures are on the same tested real
+filesystem. The parent read-only source/fixture mounts were not used as
+mutable trees.
+
+The new `t2415` has 34 cases covering fresh ordinary byte/mode/index
+agreement, actual block sharing, explicit CRLF, autocrlf, auto binary/
+mixed-EOL/no-newline detection, attributes changes in both directions,
+distinct worktree EOL config, dirty/stale/racy donors, same-size edits with
+restored mtime, concurrent donor writes and pathname replacement. Every
+scenario runs with one and eight checkout workers. Existing suites cover
+metadata, sparse/split index, submodules, source lifecycle, unsupported
+filesystems and ordinary conversion/filter/parallel checkout behavior.
+
+An offline integration fixture also used the existing Git LFS 3.7.1 ARM64
+binary, with filter/hook configuration local to the scratch repository.
+Ordinary and candidate checkouts at one/eight workers produced the exact
+260,000-byte payload and clean status. The LFS file used the ordinary
+writer and did not share, as required. No installed binary or global/app
+setting was changed. Raw local evidence is under
+`/private/tmp/reflink-converted-mw0yw26e/lfs/results.json`.
+
+[cols="3,1,1,1,1,1",options="header"]
+|===
+|Run |Completed scripts |Success |Failed |Expected broken |Skipped
+|APFS native full attempt |1,066/1,067 |32,967 |0 |377 |662
+|XFS full, `GIT_TEST_REFLINK_CHECKOUT=1` |1,067/1,067 |32,744 |0 |371 |510
+|btrfs full, `GIT_TEST_REFLINK_CHECKOUT=1` |1,067/1,067 |32,745 |0 |371 |509
+|===
+
+Native unit-test targets passed all 261 tests on macOS and Linux.
+The APFS full attempt did not complete `t5500-fetch-pack.sh`: it stalled
+in `protocol.version=0 fetch refs from cmdline`. Independent execution on
+the pinned PR #2 archive reproduced the same stall. Samples show
+fetch-pack and upload-pack both blocked in `write_in_full()`/`write()`;
+`lsof` shows their connecting pipes at 16,384 bytes. Only this task's
+verified stalled test processes were terminated after evidence capture.
+No assertion or fetch source was changed and no complete APFS full-suite
+pass is claimed. Linux completed that test as part of both full suites.
+Samples/logs are retained under this task's scratch evidence directory.
+The final native reflink-focused run passed 168 tests, with zero failures
+and three prerequisite skips (171 total).
+
+Two environment failures were diagnosed without weakening assertions.
+`t2401` uses `sed "s/w2/w1/"` on an absolute path; the assigned worktree ID
+contains `w2`. Dedicated test-output paths without that substring avoid
+corrupting the fixture path. The initial Linux tar transfer also contained
+macOS AppleDouble `._*` sidecars; these added bogus `t4018` fixture cases.
+Only those extra sidecars in this task's Linux copy were removed, and the
+complete clean suite was rerun. APFS fsmonitor tests use approved ordinary
+macOS privileges rather than disabling checks.
+
+Measurement method and tradeoffs
+--------------------------------
+
+`contrib/reflink/conversion-benchmark.py` creates independent fixtures and
+interleaves ordinary PR #2 checkout (`--no-reflink`), PR #2 reflink checkout,
+and candidate reflink checkout. Each fixture has 128 distinct 256 KiB raw
+payloads; EOL-heavy splits them between explicit `eol=crlf` and
+`text=auto eol=crlf`. An unconverted fixture controls the unchanged fast
+path. Donors age naturally and receive normal index refresh. There are
+five shuffled repetitions per fixture/control/worker cell, with a warm
+cache and no global cache purge. Eight-worker runs set the parallel
+threshold to zero. No other build/suite/benchmark from this work runs
+during the recorded timing window.
+
+Every checkout's SHA-256 bytes, modes, clean status and actual physical
+allocation/sharing are checked outside its timed creation interval. A
+separate untimed traced run per cell records conversion/compare cost.
+`output-read-bytes` counts clone bytes actually read; the `compare-output`
+region includes object reading, conversion and clone comparison. The sum
+of region durations across workers overlaps in time for eight workers;
+it is not checkout wall time or isolated CPU time. It measures the work
+paid for output equivalence separately from avoided file-data writes and
+private allocation. Successful converted candidates read/convert the blob
+once, as ordinary checkout does, and additionally read the clone. Explicit
+rules use bounded buffers; auto rules keep ordinary in-core memory use.
+A mismatch repeats conversion in the fallback writer. Avoided allocation
+is not a measured device-write count, and this work makes no blanket
+speed claim.
+
+The reproducible command is:
+
+----
+python3 contrib/reflink/conversion-benchmark.py \
+  --pr2 /private/tmp/reflink-converted-mw0yw26e/pr2 \
+  --candidate /Users/huntharo/.codex/worktrees/mw0yw26e/git \
+  --output /private/tmp/reflink-converted-mw0yw26e/bench-final
+----
+
+Measured APFS results
+----------------------
+
+The recorded window lasted 23.800 seconds, including untimed fixture work,
+evidence and validation. There were 72 checkouts: 12 untimed evidence runs
+and 60 timed runs. Timed creation intervals exclude validation, sharing
+inspection and cleanup. `conversion-results.json` beside the script retains
+all five wall/user/system samples per cell, load observations, build
+provenance and untimed physical/Trace2 evidence. The complete raw run log
+and JSON remain in the scratch `bench-final` directory.
+
+[cols="2,1,1,1,2",options="header"]
+|===
+|Fixture |Workers |Control |Median ms |Range ms
+|eol-heavy |1 |ordinary |157.399 |126.477–185.809
+|eol-heavy |1 |pr2 |134.779 |118.492–172.030
+|eol-heavy |1 |candidate |226.562 |182.109–288.528
+|eol-heavy |8 |ordinary |68.701 |48.259–100.786
+|eol-heavy |8 |pr2 |74.805 |57.622–102.905
+|eol-heavy |8 |candidate |85.483 |64.208–98.982
+|unconverted |1 |ordinary |134.336 |108.093–165.190
+|unconverted |1 |pr2 |66.830 |41.603–112.830
+|unconverted |1 |candidate |58.018 |44.155–102.413
+|unconverted |8 |ordinary |70.407 |58.417–81.674
+|unconverted |8 |pr2 |57.523 |55.583–86.560
+|unconverted |8 |candidate |64.149 |56.353–113.626
+|===
+
+The converted candidate is slower in this fixture: the medians are
+226.562 versus 134.779 ms for PR #2 with one worker, and 85.483 versus
+74.805 ms with eight. Avoiding writes does not imply a latency improvement.
+The unconverted control retains full sharing with zero output comparisons;
+its measured timing ranges overlap those of PR #2.
+
+[cols="2,2,1,1,1",options="header"]
+|===
+|Fixture |Control |Private bytes |Allocated bytes |Fully shared files
+|EOL-heavy |Ordinary |34,607,104 |34,607,104 |0/129
+|EOL-heavy |PR #2 |34,603,008 |34,607,104 |1/129
+|EOL-heavy |Candidate |0 |34,607,104 |129/129
+|Unconverted |Ordinary |34,078,720 |34,078,720 |0/128
+|Unconverted |PR #2 |0 |34,078,720 |128/128
+|Unconverted |Candidate |0 |34,078,720 |128/128
+|===
+
+These allocation results held at both worker counts. The EOL-heavy
+candidate performed 128 output comparisons and read 34,083,072 clone bytes
+at each count. Its untimed conversion/read/compare regions summed to
+148.996 ms with one worker and 164.425 ms across eight workers (overlapping
+regions). PR #2 and ordinary checkout performed no such comparisons.
+The extra clone read accompanies the ordinary object read/conversion;
+34,603,008 fewer private allocated bytes than PR #2 is the observed storage
+result, not a device-write measurement or a filesystem-wide free-space
+promise. All converted bytes and modes matched the ordinary control.
+
+Limitations
+------------
+
+Only APFS timing is measured here; Linux coverage is correctness/sharing
+on XFS and btrfs. Windows cloning remains disabled. The experiment does
+not change PR #2's stat trust for unconverted candidates, including the
+known APFS mmap/stat-invisible donor failure. Source filters/encodings
+and recipient non-EOL transformations remain fallbacks. Existing private
+files skipped by normal checkout/reset are outside this extension's
+scope; explicit existing-worktree re-sharing is a separate follow-up.
