@@ -49,13 +49,15 @@ well the parallel version performs.
 	file that the worktree's reflink source holds unmodified as a
 	copy-on-write clone of it, so the copies share disk space until one
 	of them is modified. Eligible files must match the source index's
-	normal stat checks, be non-racy, and have an unconverted representation.
-	Clones are not read back or hashed. Racy or dirty donors, or disabled
-	ctime/stat checks, use the ordinary writer. As with Git's normal stat
+	normal stat checks and be non-racy. Unconverted clones are not read back
+	or hashed. EOL conversions can share when comparison with the ordinary
+	checkout output establishes the same physical representation. Racy or
+	dirty donors, or disabled ctime/stat checks, use the ordinary writer.
+	As with Git's normal stat
 	cache, edits invisible to those checks can be missed; such a donor
 	can supply bytes that differ from a checkout from the object database.
-	Files subject to a filter driver, `ident`, `working-tree-encoding`
-	or CRLF conversion on checkout are never cloned. If false, cloning
+	Files subject to a filter driver, `ident` or `working-tree-encoding`
+	on checkout use the ordinary writer. If false, cloning
 	is disabled, even in worktrees created with `git worktree add
 	--reflink` (only that command's own initial checkout still clones).
 	If unset, worktrees created with `--reflink` clone and others do
