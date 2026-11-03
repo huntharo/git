@@ -439,7 +439,6 @@ share to all worktrees:
 See the documentation of `extensions.worktreeConfig` in
 linkgit:git-config[1] for more details.
 
-[[DETAILS]]
 [[REFLINK-PORCELAIN]]
 REFLINK PORCELAIN FORMAT
 -----------------------
@@ -487,6 +486,7 @@ bytes across both descriptors (an early mismatch may read less).
 The sharing pass is serial; `checkout.workers` continues to control ordinary
 checkout, not the repair scan.
 
+[[DETAILS]]
 DETAILS
 -------
 Each linked worktree has a private sub-directory in the repository's
