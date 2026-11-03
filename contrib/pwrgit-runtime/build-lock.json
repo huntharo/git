@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "version": "2.56.0-dev-pwrgit.1",
+  "source": {
+    "repository": "https://github.com/huntharo/git",
+    "revision": "d5db8771ce659822bd9fbb0911b600de1339fea3"
+  },
+  "recipe_reference": {
+    "repository": "https://github.com/desktop/dugite-native",
+    "revision": "a44aeca2f8593510c8080d8b7767468fa210a02c",
+    "license": "MIT",
+    "adapted": [
+      "script/build-macos.sh",
+      "script/build-ubuntu.sh",
+      "script/verify-lfs-contents.sh"
+    ]
+  },
+  "macos_deployment_target": "13.0",
+  "linux_glibc_baseline": "2.35",
+  "lfs": {
+    "version": "v3.7.1",
+    "files": [
+      {
+        "platform": "linux",
+        "arch": "amd64",
+        "filename": "git-lfs-linux-amd64-v3.7.1.tar.gz",
+        "checksum": "1c0b6ee5200ca708c5cebebb18fdeb0e1c98f1af5c1a9cba205a4c0ab5a5ec08",
+        "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-amd64-v3.7.1.tar.gz"
+      },
+      {
+        "platform": "linux",
+        "arch": "arm64",
+        "filename": "git-lfs-linux-arm64-v3.7.1.tar.gz",
+        "checksum": "73a9c90eeb4312133a63c3eaee0c38c019ea7bfa0953d174809d25b18588dd8d",
+        "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-arm64-v3.7.1.tar.gz"
+      },
+      {
+        "platform": "darwin",
+        "arch": "amd64",
+        "filename": "git-lfs-darwin-amd64-v3.7.1.zip",
+        "checksum": "b5b1b641c0648c83661fa9eda991cd3eff945264dabc2cdf411a80dfe7ec0970",
+        "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-darwin-amd64-v3.7.1.zip"
+      },
+      {
+        "platform": "darwin",
+        "arch": "arm64",
+        "filename": "git-lfs-darwin-arm64-v3.7.1.zip",
+        "checksum": "76260fb34f4ee622ff0a66b857e5954aa49c7e343a92e57a1ec4a760618c94b2",
+        "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-darwin-arm64-v3.7.1.zip"
+      }
+    ]
+  },
+  "lfs_source": {
+    "revision": "b84b33847fe6458f36ef521534dc0eac953cb379",
+    "url": "https://github.com/git-lfs/git-lfs/archive/refs/tags/v3.7.1.tar.gz",
+    "sha256": "0e83566a9e2477e03627e7fd6bf81f01fadbf93dcaf6abd2686fca90f6bac7dd"
+  }
+}

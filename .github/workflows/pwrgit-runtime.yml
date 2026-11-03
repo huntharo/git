@@ -1,0 +1,162 @@
+name: PwrGit portable runtime
+
+on:
+  pull_request:
+    paths: ['contrib/pwrgit-runtime/**', '.github/workflows/pwrgit-runtime.yml']
+  push:
+    branches: ['feat/portable-runtime-distribution']
+    tags: ['v*-dev-pwrgit.*']
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign/notarize and publish the immutable candidate (release tags only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pwrgit-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 45
+    outputs:
+      sha256: ${{ steps.archive.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build optimized slices and separate symbols
+        run: |
+          set -euo pipefail
+          python3 contrib/pwrgit-runtime/build.py --arch arm64 --output "$RUNNER_TEMP/arm64"
+          python3 contrib/pwrgit-runtime/build.py --arch x64 --output "$RUNNER_TEMP/x64"
+          python3 contrib/pwrgit-runtime/universal.py --arm64 "$RUNNER_TEMP/arm64/stage/pwrgit" --x64 "$RUNNER_TEMP/x64/stage/pwrgit" --output "$RUNNER_TEMP/universal"
+      - name: Verify extracted, relocated universal runtime and real APFS sharing
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/relocated runtime"
+          tar -xzf "$RUNNER_TEMP/"*-darwin-universal-candidate.tar.gz -C "$RUNNER_TEMP/relocated runtime"
+          python3 contrib/pwrgit-runtime/verify.py "$RUNNER_TEMP/relocated runtime" --report "$RUNNER_TEMP/verify.json"
+          python3 contrib/pwrgit-runtime/smoke.py "$RUNNER_TEMP/relocated runtime" --test-tool "$RUNNER_TEMP/arm64/source/t/helper/test-tool" --require-sharing --https --report "$RUNNER_TEMP/smoke.json"
+      - name: Test x86_64 execution through Rosetta
+        run: |
+          set -euo pipefail
+          softwareupdate --install-rosetta --agree-to-license
+          arch -x86_64 "$RUNNER_TEMP/universal/bin/git" version --build-options
+          arch -x86_64 "$RUNNER_TEMP/universal/bin/git-lfs" version
+          arch -x86_64 /bin/sh -c 'set -e; cd "$1"; for suite in t241[0-4]-*.sh; do ./$suite; done' sh "$RUNNER_TEMP/x64/source/t"
+      - name: Focused ARM64 source regressions
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/arm64/source/t"
+          for suite in t241[0-4]-*.sh; do ./$suite; done
+      - name: Archive immutable signing input and provenance
+        id: archive
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/signing-input"
+          cp -R contrib/pwrgit-runtime "$RUNNER_TEMP/signing-input/recipes"
+          cp -R "$RUNNER_TEMP/universal" "$RUNNER_TEMP/signing-input/runtime"
+          tar -czf "$RUNNER_TEMP/macos-signing-input.tar.gz" -C "$RUNNER_TEMP/signing-input" .
+          digest="$(shasum -a 256 "$RUNNER_TEMP/macos-signing-input.tar.gz" | awk '{print $1}')"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          printf '%s  macos-signing-input.tar.gz\n' "$digest" > "$RUNNER_TEMP/macos-signing-input.tar.gz.sha256"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-candidate
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/*-candidate.tar.gz*
+            ${{ runner.temp }}/arm64/*-symbols.tar.gz*
+            ${{ runner.temp }}/x64/*-symbols.tar.gz*
+            ${{ runner.temp }}/arm64/git-source.tar.gz
+            ${{ runner.temp }}/arm64/git-lfs-source.tar.gz
+            ${{ runner.temp }}/verify.json
+            ${{ runner.temp }}/smoke.json
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-signing-input
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/macos-signing-input.tar.gz
+            ${{ runner.temp }}/macos-signing-input.tar.gz.sha256
+
+  signing-readiness:
+    if: github.event_name == 'workflow_dispatch' && inputs.sign
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require immutable release tag and protected existing signing environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/tags/v*-dev-pwrgit.* ]]
+          gh api "repos/$GITHUB_REPOSITORY/environments/apple-signing" > environment.json
+          python3 - <<'PY'
+          import json
+          e=json.load(open('environment.json'))
+          assert any(r['type']=='required_reviewers' and r.get('reviewers') for r in e['protection_rules']), 'Signing requires reviewer protection'
+          assert e.get('deployment_branch_policy',{}).get('custom_branch_policies'), 'Signing requires release-tag restrictions'
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/environments/apple-signing/deployment-branch-policies" > policies.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('policies.json'))['branch_policies']
+          assert p and all(x.get('type')=='tag' and x['name']=='v*' for x in p), 'Expected the established v* tag-only signing policy'
+          PY
+
+  macos-sign:
+    if: github.event_name == 'workflow_dispatch' && inputs.sign
+    needs: [macos, signing-readiness]
+    runs-on: macos-26
+    timeout-minutes: 30
+    environment: apple-signing
+    permissions:
+      contents: read
+    steps:
+      # Sign jobs have no checkout or mutable dependency installation.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macos-signing-input
+          path: input
+      - name: Verify immutable build output before executing signing tools
+        env:
+          EXPECTED_SHA256: ${{ needs.macos.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cd input
+          actual="$(shasum -a 256 macos-signing-input.tar.gz | awk '{print $1}')"
+          test "$actual" = "$EXPECTED_SHA256"
+          shasum -a 256 --check macos-signing-input.tar.gz.sha256
+          mkdir ../stage
+          tar -xzf macos-signing-input.tar.gz -C ../stage
+      - name: Sign final universal executables once and notarize
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash stage/recipes/sign-macos.sh stage/runtime
+      - name: Archive sealed signed payload
+        run: |
+          set -euo pipefail
+          mkdir release
+          PYTHONPATH=stage/recipes python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from runtime import package
+          r=Path('stage/runtime'); m=json.loads((r/'pwrgit-build.json').read_text())
+          package(r,Path('release')/f'pwrgit-{m["version"]}-{m["source_revision"][:7]}-darwin-universal.tar.gz')
+          PY
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: signed-runtime
+          path: release/*
+          if-no-files-found: error
