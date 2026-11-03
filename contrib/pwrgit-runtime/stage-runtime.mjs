@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 PwrDrvr LLC.
 // Shared by PwrAgent and PwrGit. A checked-in manifest pins both the archive
 // and its sealed file inventory; app packaging never discovers a latest Git.
 import { spawnSync } from "node:child_process";
