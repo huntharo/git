@@ -743,6 +743,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 struct reshare_result {
 	const char *status;
 	const char *reason;
+	int error_code;
 	struct file_data_usage before, after;
 	int before_known, after_known;
 	uintmax_t deduplicated;
@@ -898,6 +899,7 @@ static void reshare_path(const struct reflink_reshare_options *opts,
 		write_name_quoted(path, stdout, term);
 		printf("status %s%creason %s%c", result->status, term,
 		       result->reason, term);
+		printf("error-code %d%c", result->error_code, term);
 		if (result->before_known)
 			printf("allocated-before %"PRIuMAX"%cprivate-before %"PRIuMAX"%c",
 			       result->before.allocated, term,
@@ -915,6 +917,8 @@ static void reshare_path(const struct reflink_reshare_options *opts,
 	} else if (opts->verbose) {
 		printf("%s (%s): ", result->status, result->reason);
 		write_name_quoted(path, stdout, '\n');
+		if (result->error_code)
+			printf("  %s\n", strerror(result->error_code));
 	}
 }
 
@@ -1037,6 +1041,10 @@ int reflink_reshare_worktree(struct repository *r,
 	}
 #endif
 	if (repo_read_index(r) < 0) {
+		if (index_locked) {
+			rollback_lock_file(&index_lock);
+			index_locked = 0;
+		}
 		error(_("index file corrupt"));
 		total.failed++;
 		goto done;
@@ -1151,6 +1159,7 @@ int reflink_reshare_worktree(struct repository *r,
 			}
 			hash_fd = dup(fd);
 			if (hash_fd < 0) {
+				result.error_code = errno;
 				result.status = "failed";
 				result.reason = "descriptor-error";
 				goto record;
@@ -1187,6 +1196,7 @@ int reflink_reshare_worktree(struct repository *r,
 			    !same_file_stat(&source_before, &source_named) ||
 			    lstat(path.buf, &named) || named.st_dev != before.st_dev ||
 			    named.st_ino != before.st_ino) {
+				result.after_known = 0;
 				result.reason = "concurrent-change";
 				goto record;
 			}
@@ -1201,6 +1211,7 @@ int reflink_reshare_worktree(struct repository *r,
 		strbuf_add(&tempdir, path.buf, strrchr(path.buf, '/') - path.buf);
 		strbuf_addstr(&tempdir, "/.git-reflink-XXXXXX");
 		if (!mkdtemp(tempdir.buf)) {
+			result.error_code = errno;
 			result.status = "failed";
 			result.reason = "temporary-directory-error";
 			goto record;
@@ -1209,6 +1220,9 @@ int reflink_reshare_worktree(struct repository *r,
 		total.clone_attempts++;
 		clone_fd = clone_fd_to_file(src_fd, clone_path.buf, before.st_mode);
 		if (clone_fd < 0) {
+			result.error_code = errno;
+			if (!clone_unsupported(errno) && errno != EINVAL)
+				result.status = "failed";
 			result.reason = "clone-failed";
 			goto record;
 		}
@@ -1232,10 +1246,12 @@ int reflink_reshare_worktree(struct repository *r,
 		    !same_file_stat(&source_before, &source_after) ||
 		    lstat(donor.buf, &source_named) ||
 		    !same_file_stat(&source_before, &source_named)) {
+			result.after_known = 0;
 			result.reason = "concurrent-change";
 			goto record;
 		}
 		if (rename_tempfile(&clone_temp, path.buf)) {
+			result.error_code = errno;
 			result.status = "failed";
 			result.reason = "replace-failed";
 			goto record;
@@ -1244,6 +1260,7 @@ int reflink_reshare_worktree(struct repository *r,
 		if (fstat(clone_fd, &after) || lstat(path.buf, &named) ||
 		    !same_file_stat(&after, &named)) {
 			result.status = "failed";
+			result.after_known = 0;
 			result.reason = "replacement-changed";
 			goto record;
 		}
@@ -1274,6 +1291,7 @@ int reflink_reshare_worktree(struct repository *r,
 			goto record;
 		}
 		if (ret < 0 && !result.deduplicated) {
+			result.error_code = dedupe_error;
 			result.reason = "native-dedupe-failed";
 			if (!clone_unsupported(dedupe_error) &&
 			    dedupe_error != EINVAL && dedupe_error != EBADF)
@@ -1289,6 +1307,7 @@ int reflink_reshare_worktree(struct repository *r,
 		    !same_file_stat(&source_before, &source_after) ||
 		    lstat(donor.buf, &source_named) ||
 		    !same_file_stat(&source_before, &source_named)) {
+			result.after_known = 0;
 			result.reason = "concurrent-change";
 			goto record;
 		}
