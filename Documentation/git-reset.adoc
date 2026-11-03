@@ -38,12 +38,6 @@ The _<mode>_ must be one of the following (default `--mixed`):
 	Leave your working directory unchanged.
 	Update the index to match the new `HEAD`, so nothing will be staged.
 +
-With effective `checkout.reflink` enablement, also try to re-share eligible
-private files after the ordinary reset completes, using the worktree's reflink
-source. This preserves the resulting bytes and skips already shared files.
-See `git worktree reflink` in linkgit:git-worktree[1] for supported filesystems,
-costs and the APFS replacement concurrency contract.
-+
 If `-N` is specified, mark removed paths as intent-to-add (see
 linkgit:git-add[1]).
 
@@ -60,6 +54,12 @@ linkgit:git-add[1]).
 	and may overwrite untracked files. Tracked files not in _<commit>_ are
 	removed so that the working tree matches _<commit>_.
 	Update the index to match the new `HEAD`, so nothing will be staged.
++
+With effective `checkout.reflink` enablement, also try to re-share eligible
+private files after the ordinary reset completes, using the worktree's reflink
+source. This preserves the resulting bytes and skips already shared files.
+See `git worktree reflink` in linkgit:git-worktree[1] for supported filesystems,
+costs and the APFS replacement concurrency contract.
 
 `--merge`::
 	Reset the index and update the files in the working tree that are
