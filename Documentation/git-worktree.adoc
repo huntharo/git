@@ -452,10 +452,11 @@ with NUL and emits path values verbatim. Otherwise paths follow
 
 The header contains `reflink 1`, `worktree <absolute-path>`, `dry-run 0|1`
 and `backend native-dedupe|clone-replace|unsupported`. Each path record has
-`path`, `status`, `reason`, `allocated-before`, `private-before`,
+`path`, `status`, `reason`, `error-code`, `allocated-before`, `private-before`,
 `allocated-after`, `private-after`, and `deduplicated-range-bytes`.
 Allocation fields contain byte counts or `unknown`. Status is `eligible`
 (dry-run), `already-shared`, `reshared`, `skipped` or `failed`.
+`error-code` is an OS errno value for a reported syscall error, otherwise zero.
 
 The `summary` record contains `scanned`, `eligible`, `already-shared`,
 `reshared`, `skipped`, `failed`, aggregate allocation fields,
