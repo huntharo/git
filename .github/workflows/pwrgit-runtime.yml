@@ -4,7 +4,7 @@ on:
   pull_request:
     paths: ['contrib/pwrgit-runtime/**', '.github/workflows/pwrgit-runtime.yml']
   push:
-    branches: ['feat/portable-runtime-distribution']
+    branches: ['pwrgit', 'feat/portable-runtime-distribution']
     tags: ['v*-dev-pwrgit.*']
   workflow_dispatch:
     inputs:
