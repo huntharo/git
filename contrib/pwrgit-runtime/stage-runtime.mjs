@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const teamRequirement = '=anchor apple generic and certificate leaf[subject.OU] = "T44CNHC4UH"';
 const hash = (data) => createHash("sha256").update(data).digest("hex");
@@ -21,6 +21,9 @@ const checked = (command, args) => {
 
 export function readRuntimeManifest(path, platform, arch) {
   const m = JSON.parse(readFileSync(path, "utf8"));
+  if (m.consumer_sha256 !== hash(readFileSync(fileURLToPath(import.meta.url)))) {
+    throw new Error("Custom Git consumer differs from the approved shared implementation");
+  }
   const key = platform === "darwin" ? "darwin-universal" : `${platform}-${arch}`;
   const asset = m.assets?.[key];
   if (m.schema !== 1 || !/^[0-9a-f]{40}$/.test(m.source_revision ?? "")

@@ -2,31 +2,36 @@
   {
     "suite": "t2410-reflink-checkout.sh",
     "passed": 38,
+    "skipped": 1,
     "failed": 0,
-    "skipped": 0
+    "total": 39
   },
   {
     "suite": "t2411-reflink-checkout-sources.sh",
     "passed": 41,
+    "skipped": 2,
     "failed": 0,
-    "skipped": 0
+    "total": 43
   },
   {
     "suite": "t2412-reflink-checkout-operations.sh",
     "passed": 16,
+    "skipped": 0,
     "failed": 0,
-    "skipped": 0
+    "total": 16
   },
   {
     "suite": "t2413-reflink-checkout-attributes.sh",
     "passed": 32,
+    "skipped": 0,
     "failed": 0,
-    "skipped": 0
+    "total": 32
   },
   {
     "suite": "t2414-reflink-stat.sh",
     "passed": 7,
+    "skipped": 0,
     "failed": 0,
-    "skipped": 0
+    "total": 7
   }
 ]

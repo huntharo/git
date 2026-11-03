@@ -91,7 +91,7 @@ with tarfile.open(lfs_source) as t:
 (root / 'SOURCES').write_text(
     f'Git {lock["version"]}: {lock["source"]["repository"]}/tree/{revision}\n'
     'Git is a separate GPL-2.0-only command-line program. Enclosing apps retain their licenses.\n'
-    f'Complete matching source: git-source.tar.gz (SHA256 {sha256(archive)}) beside this release.\n'
+    f'Complete matching source: git-source-{sha256(archive)}.tar.gz beside this release.\n'
     f'Git LFS {lock["lfs"]["version"]}: https://github.com/git-lfs/git-lfs/tree/{lock["lfs"]["version"]}\n'
     f'Unmodified upstream LFS input: {dependency["url"]}\nSHA256: {dependency["checksum"]}\n'
     'Build lock, build scripts and dependency notices accompany the release.\n'
@@ -116,7 +116,12 @@ for path in sorted(root.rglob('*')):
             run(['objcopy', '--only-keep-debug', path, str(symbol) + '.debug'])
             run(['strip', '--strip-debug', path])
 if host == 'linux':
-    subprocess.run(['python3', str(HERE / 'bundle-linux.py'), str(root), '--output', str(out)], check=True)
+    subprocess.run(['python3', str(HERE / 'bundle-linux.py'), str(root), '--output', str(out), '--arch', a.arch], check=True)
+    with (root / 'SOURCES').open('a') as notices:
+        notices.write(f'Libraries: linux-libraries.json; exact matching source inputs: linux-library-sources-{a.arch}.tar.gz.\n'
+                      'Debian source packages include original sources, downstream patches and debian/rules build/relink recipes.\n'
+                      'Original Debian copyright notices and full common license texts are in share/licenses/dependencies.\n'
+                      'Only ELF RPATH was changed for relocation; no dependency source was modified.\n')
 manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 recipe_files={p.name: sha256(p) for p in sorted(HERE.iterdir()) if p.is_file()},
                 recipe_revision=run(['git', 'rev-parse', 'HEAD'], cwd=repo),

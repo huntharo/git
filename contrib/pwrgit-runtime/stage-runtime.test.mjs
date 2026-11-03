@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -52,7 +52,9 @@ test("manifest rejects mutable URLs, missing pins, and unnotarized macOS payload
   const asset = { sha256: "a".repeat(64), inventory_sha256: "b".repeat(64),
     url: `https://github.com/huntharo/git/releases/download/v${version}/runtime.tar.gz`,
     team_id: "T44CNHC4UH", notarized: true };
-  const m = { schema: 1, version, source_revision: source, assets: { "darwin-universal": asset } };
+  const m = { schema: 1, version, source_revision: source,
+    consumer_sha256: hash(readFileSync(new URL("./stage-runtime.mjs", import.meta.url))),
+    assets: { "darwin-universal": asset } };
   writeFileSync(path, JSON.stringify(m));
   assert.equal(readRuntimeManifest(path, "darwin", "arm64").key, "darwin-universal");
   asset.notarized = false;

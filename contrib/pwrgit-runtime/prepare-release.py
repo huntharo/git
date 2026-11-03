@@ -7,7 +7,7 @@ import re
 import shutil
 import tarfile
 
-from runtime import sha256, write_json
+from runtime import HERE, sha256, write_json
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--inputs', type=Path, required=True)
@@ -17,9 +17,11 @@ p.add_argument('--run-url', required=True)
 p.add_argument('--expected-macos-sha256', required=True)
 a = p.parse_args()
 a.output.mkdir(exist_ok=False)
-catalog = {'schema': 1, 'assets': {}, 'build_run': a.run_url}
+catalog = {'schema': 1, 'assets': {}, 'build_run': a.run_url, 'consumer_sha256': sha256(HERE / 'stage-runtime.mjs')}
 for path in sorted(a.inputs.rglob('*.tar.gz')):
     name = path.name
+    if name == 'git-source.tar.gz':
+        name = f'git-source-{sha256(path)}.tar.gz'
     if name == 'macos-signing-input.tar.gz':
         continue
     if '-candidate' in name:
