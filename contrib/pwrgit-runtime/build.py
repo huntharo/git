@@ -132,6 +132,7 @@ if host == 'linux':
                       'Only ELF RPATH was changed for relocation; no dependency source was modified.\n')
 manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 source_ref=source_ref,
+                source_pull_requests=lock['source']['pull_requests'],
                 recipe_files={p.name: sha256(p) for p in sorted(HERE.iterdir()) if p.is_file()},
                 recipe_revision=run(['git', 'rev-parse', 'HEAD'], cwd=repo),
                 platform=host, architecture=a.arch, flags=flags,

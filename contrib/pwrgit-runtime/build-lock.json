@@ -1,10 +1,11 @@
 {
   "schema": 1,
-  "version": "2.56.0-dev-pwrgit.1",
+  "version": "2.56.0-dev-pwrgit.2",
   "source": {
     "repository": "https://github.com/huntharo/git",
-    "ref": "refs/tags/pwrgit-source/2.56.0-dev-pwrgit.1",
-    "revision": "d5db8771ce659822bd9fbb0911b600de1339fea3"
+    "ref": "refs/tags/pwrgit-source/2.56.0-dev-pwrgit.2",
+    "revision": "ada47e445ed68570a72e2b2641c48e36a0f8df63",
+    "pull_requests": [2, 3, 5]
   },
   "recipe_reference": {
     "repository": "https://github.com/desktop/dugite-native",

@@ -68,7 +68,7 @@ jobs:
               apt-get install -y --no-install-recommends python3 ca-certificates
               python3 /src/contrib/pwrgit-runtime/smoke.py "/out/relocated runtime" --test-tool /out/build/source/t/helper/test-tool --root /tests --require-sharing --report "/out/sharing-$1.json"
               cd /out/build/source/t
-              for suite in t241[0-4]-*.sh; do ./$suite --root=/tests; done
+              for suite in t241[0-6]-*.sh; do ./$suite --root=/tests; done
             ' bash "$filesystem"
             sudo umount "$RUNNER_TEMP/$filesystem"
           done
@@ -116,12 +116,12 @@ jobs:
           softwareupdate --install-rosetta --agree-to-license
           arch -x86_64 "$RUNNER_TEMP/universal/bin/git" version --build-options
           arch -x86_64 "$RUNNER_TEMP/universal/bin/git-lfs" version
-          arch -x86_64 /bin/sh -c 'set -e; cd "$1"; for suite in t241[0-4]-*.sh; do ./$suite; done' sh "$RUNNER_TEMP/x64/source/t"
+          arch -x86_64 /bin/sh -c 'set -e; cd "$1"; for suite in t241[0-6]-*.sh; do ./$suite; done' sh "$RUNNER_TEMP/x64/source/t"
       - name: Focused ARM64 source regressions
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/arm64/source/t"
-          for suite in t241[0-4]-*.sh; do ./$suite; done
+          for suite in t241[0-6]-*.sh; do ./$suite; done
       - name: Archive immutable signing input and provenance
         id: archive
         run: |

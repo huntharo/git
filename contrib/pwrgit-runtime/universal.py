@@ -15,7 +15,7 @@ a = p.parse_args()
 for root in (a.arm64, a.x64):
     verify_inventory(root)
 manifests = [json.loads((x / 'pwrgit-build.json').read_text()) for x in (a.arm64, a.x64)]
-for field in ('version', 'source_revision', 'source_ref', 'primary_sha1', 'source_archive_sha256', 'minimum_os', 'lfs_version'):
+for field in ('version', 'source_revision', 'source_ref', 'source_pull_requests', 'primary_sha1', 'source_archive_sha256', 'minimum_os', 'lfs_version'):
     if manifests[0][field] != manifests[1][field]:
         raise ValueError(f'Slice provenance differs: {field}')
 if [m['architecture'] for m in manifests] != ['arm64', 'x64'] or any(m['platform'] != 'darwin' for m in manifests):
