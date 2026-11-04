@@ -174,7 +174,11 @@ static int strip_xattrs(int fd)
 static int fix_up_clone(int fd, int mode)
 {
 	struct attrlist al = { 0 };
-	struct timespec now, times[2];
+	struct {
+		struct timespec birth, mtime, atime;
+		uint32_t mode;
+	} __attribute__((packed)) attrs;
+	struct timespec now;
 	struct stat st;
 
 	if (fstat(fd, &st))
@@ -193,7 +197,7 @@ static int fix_up_clone(int fd, int mode)
 	 * Strip extended attributes first: removing them needs write
 	 * permission, which the final mode may not give us.
 	 */
-	if (strip_xattrs(fd) || fchmod(fd, mode & ~current_umask()))
+	if (strip_xattrs(fd))
 		return -1;
 	/*
 	 * clonefile() keeps the source's timestamps, including the
@@ -203,11 +207,12 @@ static int fix_up_clone(int fd, int mode)
 	if (clock_gettime(CLOCK_REALTIME, &now))
 		return -1;
 	al.bitmapcount = ATTR_BIT_MAP_COUNT;
-	al.commonattr = ATTR_CMN_CRTIME;
-	if (fsetattrlist(fd, &al, &now, sizeof(now), 0))
-		return -1;
-	times[0] = times[1] = now;
-	return futimens(fd, times);
+	al.commonattr = ATTR_CMN_CRTIME | ATTR_CMN_MODTIME |
+		ATTR_CMN_ACCTIME | ATTR_CMN_ACCESSMASK;
+	/* setattrlist packs attributes in bitmap order, on four-byte boundaries. */
+	attrs.birth = attrs.mtime = attrs.atime = now;
+	attrs.mode = mode & ~current_umask();
+	return fsetattrlist(fd, &al, &attrs, sizeof(attrs), 0);
 }
 #endif
 

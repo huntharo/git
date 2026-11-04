@@ -234,6 +234,45 @@ static int age_file(const char *path)
 
 int cmd__reflink(int argc, const char **argv)
 {
+	if (argc >= 4 && !strcmp(argv[1], "usage-loop")) {
+		struct file_data_usage usage;
+		uintmax_t allocated = 0, private_bytes = 0;
+		int nr = argc - 3, *fds = xmalloc(st_mult(nr, sizeof(*fds)));
+		int repetitions = atoi(argv[2]);
+
+		if (repetitions <= 0)
+			die("usage-loop requires a positive repetition count");
+		for (int i = 0; i < nr; i++) {
+			fds[i] = open(argv[i + 3], O_RDONLY
+#if defined(__APPLE__) || defined(__linux__)
+				      | O_NONBLOCK | O_NOFOLLOW
+#endif
+				     );
+			if (fds[i] < 0)
+				die_errno("open");
+		}
+		for (int rep = 0; rep < repetitions; rep++)
+			for (int i = 0; i < nr; i++) {
+				struct stat st;
+
+				/* Include the caller's stat, as in worktree re-sharing. */
+				if (fstat(fds[i], &st))
+					die_errno("fstat");
+#ifdef HAVE_FILE_DATA_USAGE_FROM_STAT
+				if (get_file_data_usage_from_stat(fds[i], &st, &usage))
+#else
+				if (get_file_data_usage(fds[i], &usage))
+#endif
+					die_errno("get_file_data_usage");
+				allocated += usage.allocated;
+				private_bytes += usage.private_bytes;
+			}
+		for (int i = 0; i < nr; i++)
+			close(fds[i]);
+		free(fds);
+		printf("%"PRIuMAX" %"PRIuMAX"\n", private_bytes, allocated);
+		return 0;
+	}
 	if (argc == 3 && !strcmp(argv[1], "metadata")) {
 		struct stat st;
 		long atime_nsec = 0;
@@ -285,5 +324,5 @@ int cmd__reflink(int argc, const char **argv)
 		       t.private_bytes, t.allocated, t.files, t.fully_shared);
 		return 0;
 	}
-	usage("test-tool reflink (probe <dir> | age <path> | shared <a> <b> | private-bytes <path>...)");
+	usage("test-tool reflink (usage-loop <repetitions> <file>... | probe <dir> | age <path> | shared <a> <b> | private-bytes <path>...)");
 }
