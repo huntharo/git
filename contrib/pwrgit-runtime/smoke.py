@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
         g(base, 'init', '-q', src)
         for key, value in [('user.name', 'Runtime smoke'), ('user.email', 'runtime@example.invalid'),
                            ('commit.gpgsign', 'false'), ('checkout.workers', str(workers)),
-                           ('checkout.thresholdForParallelism', '0')]:
+                           ('checkout.thresholdForParallelism', '0'), ('checkout.reflink', 'true')]:
             g(src, 'config', key, value)
         g(src, 'lfs', 'install', '--local')
         g(src, 'lfs', 'track', '*.lfs')

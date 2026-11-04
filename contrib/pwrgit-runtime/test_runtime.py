@@ -3,12 +3,32 @@ import errno
 import importlib.util
 from pathlib import Path
 import subprocess
+import shutil
 import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from runtime import extract, ldd_dependencies, seal, verify_inventory
+from configuration import verify_configuration
+
+
+class ConfigurationTests(unittest.TestCase):
+    def test_system_global_repository_and_explicit_overrides(self):
+        import os
+        result = verify_configuration(shutil.which('git'), Path(__file__).with_name('gitconfig'), os.environ)
+        self.assertTrue(result['system_global_repository_visible'])
+        self.assertTrue(result['includes_and_precedence'])
+        self.assertTrue(result['explicit_system_override'])
+        self.assertTrue(result['nosystem_honored'])
+
+    def test_previous_runtime_config_regression_is_rejected(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'gitconfig'
+            config.write_text('[checkout]\n\treflink = true\n')
+            with self.assertRaises(subprocess.CalledProcessError):
+                verify_configuration(shutil.which('git'), config, os.environ)
 
 
 class MacOSCleanupTests(unittest.TestCase):

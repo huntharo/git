@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": "2.56.0-dev-pwrgit.2",
+  "version": "2.56.0-dev-pwrgit.3",
   "source": {
     "repository": "https://github.com/huntharo/git",
     "ref": "refs/tags/pwrgit-source/2.56.0-dev-pwrgit.2",

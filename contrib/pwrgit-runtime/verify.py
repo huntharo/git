@@ -9,6 +9,7 @@ import re
 import tempfile
 
 from runtime import is_macho, ldd_dependencies, run, verify_inventory, write_json
+from configuration import verify_configuration
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('root', type=Path)
@@ -33,6 +34,8 @@ if 'SHA-1: SHA1_DC' not in build_options or 'built from commit: ' + m['source_re
     raise ValueError('Executable source revision or primary SHA1_DC protection differs from provenance')
 assert run([git, '--exec-path'], env=env) == str(root / 'libexec/git-core')
 assert run([git, 'lfs', 'version'], env=env).startswith('git-lfs/' + m['lfs_version'] + ' ')
+assert run([git, 'config', '--system', '--no-includes', '--get-all', 'include.path'], env=env) == '/etc/gitconfig'
+configuration = verify_configuration(git, root / 'etc/gitconfig', env)
 assert (root / 'share/git-core/templates/hooks').is_dir()
 for name in ['COPYING', 'LICENSE.git-lfs', 'SOURCES']:
     assert (root / name).is_file(), name
@@ -80,7 +83,8 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-relocated-') as tmp:
 result = dict(version=m['version'], source_revision=m['source_revision'],
               build_options=build_options,
               architecture=m['architecture'], sealed_inventory=True,
-              relocated_exec_path=True, lfs=True, templates=True, executables=executables)
+              relocated_exec_path=True, lfs=True, templates=True,
+              configuration=configuration, executables=executables)
 if a.report:
     write_json(a.report, result)
 print(json.dumps({k: v for k, v in result.items() if k != 'executables'}, sort_keys=True))

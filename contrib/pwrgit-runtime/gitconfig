@@ -1,0 +1,4 @@
+[include]
+	path = /etc/gitconfig
+[credential "https://dev.azure.com"]
+	useHttpPath = true

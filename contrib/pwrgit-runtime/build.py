@@ -93,7 +93,7 @@ with tarfile.open(lfs_source) as t:
     with t.extractfile(licenses[0]) as stream:
         (root / 'LICENSE.git-lfs').write_bytes(stream.read())
 (root / 'etc').mkdir(exist_ok=True)
-(root / 'etc/gitconfig').write_text('[checkout]\n\treflink = true\n')
+shutil.copy2(HERE / 'gitconfig', root / 'etc/gitconfig')
 (root / 'SOURCES').write_text(
     f'Git {lock["version"]}: {lock["source"]["repository"]}/tree/{revision}\n'
     f'Frozen source ref: {source_ref}\n'

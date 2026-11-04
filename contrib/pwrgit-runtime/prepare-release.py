@@ -74,6 +74,8 @@ for report in sorted(a.inputs.rglob('*.json')):
     'This is a custom build of the 2.56 development line, not a final upstream 2.56 release.\n'
     'Included source PRs: ' + ', '.join(f'#{n}' for n in catalog['source_pull_requests']) + '.\n'
     'Includes conversion-aware checkout, git worktree reflink, and enabled hard-reset re-sharing.\n'
+    'Runtime config includes /etc/gitconfig and retains the Azure DevOps useHttpPath rule.\n'
+    'The runtime does not force checkout.reflink; apps and normal Git configuration control enablement.\n'
     'Existing donor/stat trust remains; this does not acquire PR #1 donor verification.\n'
     'APFS replacement changes inode/ctime. Do not use writable mmap or retain writable descriptors across replacement; ordinary writes after the last check can also race rename. Read-only object/pack mappings are unaffected.\n'
     'Git LFS 3.7.1, helpers, templates, notices, sources, symbols and checksums are included.\n'
