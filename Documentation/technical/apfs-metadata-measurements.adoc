@@ -113,7 +113,9 @@ Trace2 requires all expected nonempty files to be cloned without clone or
 verification failures. Nanosecond timestamps remain unchanged by reads on
 the noatime volume.
 
-Suites t2410--t2416 pass all 209 tests. The existing fsmonitor test in t2413
+Suites t2410--t2416 report 202 passed cases and seven prerequisite skips
+(209 total): POSIX setfacl, NODATACOW, cross-filesystem APFS/HFS+ image
+cases and cleanup, and Linux /dev/shm. The existing fsmonitor test in t2413
 requires an unrestricted daemon; it passes outside the sandbox. t2416 runs
 on the noatime image. New suite t2417 passes its oracle and four-umask clone
 repair checks. Existing donor/content/metadata/concurrency tests retain
