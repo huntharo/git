@@ -7,6 +7,8 @@
 *.py text eol=lf diff=python
 *.bat text eol=crlf
 CODE_OF_CONDUCT.md -whitespace
+# Keep the checksum-pinned upstream license byte-identical, including its spaces.
+/contrib/pwrgit-runtime/MPL-2.0 whitespace=-blank-at-eol
 /Documentation/**/*.adoc text eol=lf whitespace=trail,space,incomplete
 /command-list.txt text eol=lf
 /GIT-VERSION-GEN text eol=lf
