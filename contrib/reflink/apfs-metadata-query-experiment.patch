@@ -1,0 +1,95 @@
+--- a/copy.c
++++ b/copy.c
+@@ -216,0 +217,42 @@
++
++#if defined(ATTR_CMNEXT_CLONE_REFCNT) && defined(EF_SHARES_ALL_BLOCKS)
++static int apfs_fully_shared(int fd, const struct stat *st)
++{
++	struct attrlist al = { 0 };
++	struct {
++		uint32_t len;
++		attribute_set_t returned;
++		dev_t device;
++		uint64_t inode;
++		off_t data_alloc;
++		uint32_t real_device;
++		uint64_t clone_id, flags;
++		uint32_t references;
++	} __attribute__((packed)) buf = { 0 };
++
++	al.bitmapcount = ATTR_BIT_MAP_COUNT;
++	al.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_DEVID | ATTR_CMN_FILEID;
++	al.fileattr = ATTR_FILE_DATAALLOCSIZE;
++	al.forkattr = ATTR_CMNEXT_REALDEVID | ATTR_CMNEXT_CLONEID |
++		ATTR_CMNEXT_EXT_FLAGS | ATTR_CMNEXT_CLONE_REFCNT;
++	/*
++	 * No pathname or cached clone identity is involved: this descriptor pins
++	 * the vnode, including its physical volume and data-stream identity.
++	 * Still require every identity field and match the preceding fstat.
++	 * PACK_INVAL_ATTRS keeps offsets fixed when an attribute is unsupported;
++	 * the returned mask, not a zero-filled slot, establishes availability.
++	 */
++	if (fgetattrlist(fd, &al, &buf, sizeof(buf),
++			 FSOPT_ATTR_CMN_EXTENDED | FSOPT_PACK_INVAL_ATTRS) ||
++	    buf.len != sizeof(buf) ||
++	    (buf.returned.commonattr & al.commonattr) != al.commonattr ||
++	    (buf.returned.fileattr & al.fileattr) != al.fileattr ||
++	    (buf.returned.forkattr & al.forkattr) != al.forkattr)
++		return 0;
++	return buf.device == st->st_dev && buf.inode == st->st_ino &&
++		buf.real_device && buf.clone_id && buf.data_alloc >= 0 &&
++		on_disk_bytes(*st) >= 0 &&
++		(uintmax_t)buf.data_alloc <= (uintmax_t)on_disk_bytes(*st) &&
++		(buf.flags & EF_SHARES_ALL_BLOCKS) && buf.references >= 2;
++}
++#endif
+@@ -371,0 +414,10 @@
++	if (fstat(fd, &st)) {
++		memset(usage, 0, sizeof(*usage));
++		return -1;
++	}
++	return get_file_data_usage_from_stat(fd, &st, usage);
++}
++
++int get_file_data_usage_from_stat(int fd, const struct stat *st,
++				struct file_data_usage *usage)
++{
+@@ -373,3 +425 @@
+-	if (fstat(fd, &st))
+-		return -1;
+-	if (!S_ISREG(st.st_mode)) {
++	if (!S_ISREG(st->st_mode)) {
+@@ -379 +429 @@
+-	usage->allocated = on_disk_bytes(st);
++	usage->allocated = on_disk_bytes(*st);
+@@ -380,0 +431,4 @@
++#if defined(ATTR_CMNEXT_CLONE_REFCNT) && defined(EF_SHARES_ALL_BLOCKS)
++	if (apfs_fully_shared(fd, st))
++		return 0;
++#endif
+@@ -395 +449,2 @@
+-		if (!(buf.returned.forkattr & ATTR_CMNEXT_PRIVATESIZE) ||
++		if (buf.len != sizeof(buf) ||
++		    !(buf.returned.forkattr & ATTR_CMNEXT_PRIVATESIZE) ||
+@@ -405,0 +461 @@
++		struct stat after;
+@@ -449 +505 @@
+-		if (fstat(fd, &st))
++		if (fstat(fd, &after))
+@@ -451 +507 @@
+-		usage->allocated = on_disk_bytes(st);
++		usage->allocated = on_disk_bytes(after);
+--- a/copy.h
++++ b/copy.h
+@@ -44,0 +45,5 @@
++/* Reuse a just-read fstat of this same open descriptor (never a cached stat). */
++#define HAVE_FILE_DATA_USAGE_FROM_STAT 1
++int get_file_data_usage_from_stat(int fd, const struct stat *st,
++				struct file_data_usage *usage);
++
+--- a/reflink-checkout.c
++++ b/reflink-checkout.c
+@@ -1093 +1093,2 @@
+-		result.before_known = !get_file_data_usage(fd, &result.before);
++		result.before_known = !get_file_data_usage_from_stat(fd, &before,
++								  &result.before);
