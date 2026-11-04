@@ -86,12 +86,16 @@ CA store, `/bin/sh`, and SSH remain host requirements. Linux tests cover
 relocation, the baseline ABI, ordinary fallback, and actual XFS/btrfs sharing.
 Windows is intentionally excluded from this release at the user's request.
 
-macOS package smoke checks run on the runner's ordinary APFS volume. The
-seven focused source suites additionally run on a private APFS image mounted
-with `noatime`, verified by mount flags and an actual read control. This is
-the controlled condition for their strict before/after metadata assertions;
-the assertions and frozen source are unchanged. The x64 leg also retains an
-ordinary-volume reproduction of already-shared and hardlink/sparse cases,
+macOS package smoke checks and source suites t2410--t2415 run on the runner's
+ordinary APFS volume. These suites include their own APFS/HFS+ test images;
+their original root avoids nesting those images inside another test image.
+Suite t2416 runs on a private APFS image mounted with `noatime`, verified by
+mount flags and an actual read control. This is the controlled condition for
+its strict before/after metadata assertions; the assertions and frozen source
+are unchanged. Cleanup retries busy-volume errors with 15 seconds of total
+waiting, and fails while preserving a persistently busy image. The x64 leg
+also retains an ordinary-volume reproduction of already-shared and
+hardlink/sparse cases,
 with a bounded filesystem reader trace. Both conditions and their results
 are uploaded even when a suite fails.
 

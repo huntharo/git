@@ -1,10 +1,86 @@
 import io
+import errno
+import importlib.util
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from runtime import extract, ldd_dependencies, seal, verify_inventory
+
+
+class MacOSCleanupTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            'runtime_macos_tests', Path(__file__).with_name('test-macos.py'))
+        cls.macos = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.macos)
+
+    def detach_result(self, code):
+        return subprocess.CompletedProcess(['hdiutil', 'detach', '/owned/image'], code)
+
+    def test_busy_volume_released_during_grace_period(self):
+        with patch.object(self.macos.subprocess, 'run', side_effect=[
+                self.detach_result(errno.EBUSY), self.detach_result(0)]) as detach, \
+                patch.object(self.macos.time, 'sleep') as sleep:
+            self.macos.detach_volume(Path('/owned/image'))
+        self.assertEqual(detach.call_count, 2)
+        sleep.assert_called_once_with(1)
+        self.assertTrue(all(c.args[0] == ['hdiutil', 'detach', '/owned/image']
+                            for c in detach.call_args_list))
+
+    def test_persistently_busy_volume_fails_without_force(self):
+        with patch.object(self.macos.subprocess, 'run',
+                          return_value=self.detach_result(errno.EBUSY)) as detach, \
+                patch.object(self.macos.time, 'sleep') as sleep:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.macos.detach_volume(Path('/owned/image'))
+        self.assertEqual(detach.call_count, 5)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [1, 2, 4, 8])
+        self.assertTrue(all('-force' not in c.args[0] for c in detach.call_args_list))
+
+    def test_nonbusy_failure_is_not_retried(self):
+        with patch.object(self.macos.subprocess, 'run',
+                          return_value=self.detach_result(1)) as detach, \
+                patch.object(self.macos.time, 'sleep') as sleep:
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.macos.detach_volume(Path('/owned/image'))
+        detach.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_only_metadata_suite_uses_image_and_other_failures_remain_fatal(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        source, out = root / 'source', root / 'output'
+        (source / 't').mkdir(parents=True)
+        names = [f't241{i}-fixture.sh' for i in range(6)] + ['t2416-worktree-reflink.sh']
+        for name in names:
+            (source / 't' / name).touch()
+
+        def fake_run(args):
+            if args[:2] == ['hdiutil', 'create']:
+                args[-1].write_bytes(b'owned image')
+
+        argv = ['test-macos.py', '--arch', 'arm64', '--source', str(source),
+                '--output', str(out)]
+        mount = f'/dev/owned on {out}/metadata-volume (apfs, noatime)\n'
+        with patch('sys.argv', argv), patch('sys.stdout', io.StringIO()), \
+                patch.object(self.macos, 'run', side_effect=fake_run), \
+                patch.object(self.macos.subprocess, 'check_output',
+                             side_effect=['git build options', mount]), \
+                patch.object(self.macos, 'read_probe', return_value={'atime_changed': False}), \
+                patch.object(self.macos, 'suite', side_effect=[1, 0, 0, 0, 0, 0, 0]) as suite, \
+                patch.object(self.macos, 'detach_volume') as detach:
+            self.assertEqual(self.macos.main(), 1)
+        self.assertEqual(suite.call_count, 7)
+        self.assertEqual([c.args[2] for c in suite.call_args_list[:6]], [source / 't'] * 6)
+        self.assertEqual(suite.call_args_list[-1].args[2], out / 'metadata-volume')
+        detach.assert_called_once_with(out / 'metadata-volume')
+        self.assertFalse((out / 'metadata.sparseimage').exists())
 
 
 class InventoryTests(unittest.TestCase):

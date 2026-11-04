@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run strict metadata regressions on an owned, verified noatime APFS volume.
+"""Run source regressions, isolating strict metadata checks on noatime APFS.
 
 Ordinary-volume package smoke tests remain separate. Reads can advance atime
 there; a noatime pass must not be reported as an unchanged-atime guarantee.
 """
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -71,6 +72,20 @@ def retain_reader_trace(stream, log, capture):
             descriptors.discard(key)
 
 
+def detach_volume(volume):
+    # New volumes can remain briefly open in OS services after tests finish.
+    # Retry only EBUSY; preserve a persistently busy image without forcing it.
+    for delay in (0, 1, 2, 4, 8):
+        if delay:
+            time.sleep(delay)
+        result = subprocess.run(['hdiutil', 'detach', str(volume)])
+        if result.returncode == 0:
+            return
+        if result.returncode != errno.EBUSY:
+            result.check_returncode()
+    result.check_returncode()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source', type=Path, required=True)
@@ -83,10 +98,17 @@ def main():
     out.mkdir(parents=True)
     arch = '-x86_64' if a.arch == 'x64' else '-arm64'
     report = dict(architecture=a.arch, strict_metadata_condition='APFS noatime',
+                  strict_metadata_suite='t2416-worktree-reflink.sh',
+                  ordinary_volume_suites=[path.name for path in suites[:-1]],
                   ordinary_volume_unchanged_atime_guarantee=False, suites={})
     report['git_build_options'] = subprocess.check_output(
         ['/usr/bin/arch', arch, str(source / 'git'), 'version', '--build-options'], text=True)
     report['ordinary_read_control'] = read_probe(out)
+
+    # Preserve the original root for suites which create their own disk images.
+    # Nesting their HFS+ image inside our metadata image can prevent detachment.
+    for path in suites[:-1]:
+        report['suites'][path.name] = suite(source, arch, source / 't', path.name)
 
     # Preserve evidence from the original environment, including already-shared
     # and hardlink skips. This diagnostic is not the strict regression gate.
@@ -126,6 +148,7 @@ def main():
         run(['hdiutil', 'attach', '-nobrowse', '-owners', 'on',
              '-mountpoint', volume, image])
         attached = True
+        (volume / '.metadata_never_index').touch()
         run(['sudo', '-n', '/sbin/mount', '-u', '-o', 'noatime', volume])
         mounts = subprocess.check_output(['/sbin/mount'], text=True).splitlines()
         mount = next(line for line in mounts if ' on ' + str(volume) + ' (' in line)
@@ -136,12 +159,13 @@ def main():
         assert not report['controlled_read_control']['atime_changed']
         print('Strict metadata regressions: verified APFS noatime; ordinary-volume '
               'access-time behavior is recorded separately.', flush=True)
-        for path in suites:
-            report['suites'][path.name] = suite(source, arch, volume, path.name)
+        path = suites[-1]
+        assert path.name == 't2416-worktree-reflink.sh'
+        report['suites'][path.name] = suite(source, arch, volume, path.name)
     finally:
         (out / 'conditions.json').write_text(json.dumps(report, indent=2) + '\n')
         if attached:
-            run(['hdiutil', 'detach', volume])
+            detach_volume(volume)
         image.unlink()
     return int(any(report['suites'].values()))
 
