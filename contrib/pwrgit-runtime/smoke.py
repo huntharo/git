@@ -20,6 +20,8 @@ p.add_argument('--report', type=Path, required=True)
 p.add_argument('--root', type=Path, help='Place test files on this filesystem')
 a = p.parse_args()
 runtime = a.runtime.resolve()
+runtime_manifest = json.loads((runtime / 'pwrgit-build.json').read_text())
+has_reshare = 5 in runtime_manifest.get('source_pull_requests', [])
 git = runtime / 'bin/git'
 helper = a.test_tool.resolve()
 env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_'))}
@@ -88,6 +90,29 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
         assert (wt / 'payload').stat().st_ino == inode
         if sharing:
             cmd([helper, 'reflink', 'shared', src / 'payload', wt / 'payload'], base)
+        if has_reshare:
+            # Reproduce an ordinary writer breaking sharing without changing
+            # bytes. Explicit repair and enabled no-op hard reset must recover it.
+            for repair in ('command', 'hard-reset'):
+                (wt / 'payload').write_bytes(data)
+                time.sleep(1.1)
+                g(wt, 'update-index', '--refresh', '--force-write-index')
+                before = (wt / 'payload').stat().st_ino
+                g(wt, 'worktree', 'reflink', '--dry-run', '--porcelain')
+                assert (wt / 'payload').stat().st_ino == before
+                assert (wt / 'payload').read_bytes() == data
+                if repair == 'command':
+                    g(wt, 'worktree', 'reflink', '--porcelain')
+                else:
+                    g(wt, '-c', 'checkout.reflink=true', 'reset', '-q', '--hard')
+                assert (wt / 'payload').read_bytes() == data
+                assert (wt / 'local.lfs').read_bytes() == lfs_data
+                if sharing:
+                    cmd([helper, 'reflink', 'shared', src / 'payload', wt / 'payload'], base)
+                repaired_inode = (wt / 'payload').stat().st_ino
+                g(wt, 'worktree', 'reflink')
+                assert (wt / 'payload').stat().st_ino == repaired_inode
+            assert not g(wt, 'status', '--porcelain')
         (src / 'payload').write_bytes(b'D' + data[1:])
         dirty = base / 'dirty'
         g(src, 'worktree', 'add', '-q', '--detach', dirty)
@@ -119,6 +144,7 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
                             lfs_smudge_and_pointer=True, crlf=True, external_filter=True,
                             dirty_donor=True, changed_contents_independent=True, disabled_fallback=True,
                             noop_preserved=True, sparse=True, submodule=True,
+                            existing_worktree_reshare=has_reshare, hard_reset_reshare=has_reshare,
                             payload_sha256=hashlib.sha256(data).hexdigest()))
     if a.https:
         assert g(root, '-c', 'credential.helper=', 'ls-remote', 'https://github.com/huntharo/git.git', 'HEAD')

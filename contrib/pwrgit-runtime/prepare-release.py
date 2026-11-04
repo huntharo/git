@@ -45,7 +45,7 @@ for path in sorted(a.inputs.rglob('*.tar.gz')):
             inventory_sha256 = hashlib.sha256(stream.read()).hexdigest()
     if a.tag != 'v' + m['version'] or m['primary_sha1'] != 'SHA1_DC':
         raise ValueError('Release tag, version or primary hash protection mismatch')
-    for field in ('version', 'source_revision'):
+    for field in ('version', 'source_revision', 'source_pull_requests'):
         if field in catalog and catalog[field] != m[field]:
             raise ValueError(f'Release source set differs: {field}')
         catalog[field] = m[field]
@@ -72,7 +72,10 @@ for report in sorted(a.inputs.rglob('*.json')):
 (a.output / 'RELEASE-NOTES.txt').write_text(
     f'Custom Git {catalog["version"]}\n\nExact C source: {catalog["source_revision"]}\n'
     'This is a custom build of the 2.56 development line, not a final upstream 2.56 release.\n'
-    'The source set is PR #2 only; PR #3 and existing-worktree re-sharing are absent.\n'
+    'Included source PRs: ' + ', '.join(f'#{n}' for n in catalog['source_pull_requests']) + '.\n'
+    'Includes conversion-aware checkout, git worktree reflink, and enabled hard-reset re-sharing.\n'
+    'Existing donor/stat trust remains; this does not acquire PR #1 donor verification.\n'
+    'APFS replacement changes inode/ctime. Do not use writable mmap or retain writable descriptors across replacement; ordinary writes after the last check can also race rename. Read-only object/pack mappings are unaffected.\n'
     'Git LFS 3.7.1, helpers, templates, notices, sources, symbols and checksums are included.\n'
     'macOS: final universal executables signed by PwrDrvr LLC (T44CNHC4UH) and accepted by Apple notarization.\n'
     'Linux: x64/ARM64, bundled non-glibc libraries and their exact source inputs; glibc 2.35 baseline.\n'

@@ -12,6 +12,18 @@ The first frozen source is PR #2, exactly
 investigations, and existing-worktree re-sharing/reset changes are absent.
 They require a separately identified source freeze and version.
 
+The second freeze, `2.56.0-dev-pwrgit.2`, selects PR #2 + PR #3 + PR #5 at
+`ada47e445ed68570a72e2b2641c48e36a0f8df63`. It includes conversion-aware
+checkout, `git worktree reflink [<worktree>]`, and enabled hard-reset
+re-sharing. It does not acquire PR #1's stronger donor verification.
+The production code and tests match tested revision `03864ebb20`.
+APFS replacement changes inode/ctime; working-tree writable mmap and retained
+writable descriptors across replacement are excluded by the accepted contract.
+An ordinary write after the final check can also race rename. Read-only
+object/pack mappings are unaffected. See the source's
+`Documentation/technical/worktree-reflink.adoc` for tests, measured scan costs
+and the incomplete APFS t5500 pipe-deadlock limit.
+
 == Fork branches and upstream submissions
 
 `master` tracks upstream Git. `pwrgit` is this fork's default release branch
@@ -73,6 +85,30 @@ package inputs, version inventory, and checksums. glibc 2.35, the system
 CA store, `/bin/sh`, and SSH remain host requirements. Linux tests cover
 relocation, the baseline ABI, ordinary fallback, and actual XFS/btrfs sharing.
 Windows is intentionally excluded from this release at the user's request.
+
+macOS package smoke checks and source suites t2410--t2415 run on the runner's
+ordinary APFS volume. These suites include their own APFS/HFS+ test images;
+their original root avoids nesting those images inside another test image.
+Suite t2416 runs on a private APFS image mounted with `noatime`, verified by
+mount flags and an actual read control. This is the controlled condition for
+its strict before/after metadata assertions; the assertions and frozen source
+are unchanged. Cleanup retries busy-volume errors with 15 seconds of total
+waiting, and fails while preserving a persistently busy image. The x64 leg
+also retains an ordinary-volume reproduction of already-shared and
+hardlink/sparse cases,
+with a bounded filesystem reader trace. Both conditions and their results
+are uploaded even when a suite fails.
+
+The macOS 26 ordinary-volume failure changed only atime in nine cases. A
+`noatime` suite pass does not establish an unchanged-atime guarantee on an
+ordinary mount. APFS replacement copies and verifies the target's captured
+atime before publication; this does not suppress access-time updates from
+other reads. Dry-run comparisons use ordinary reads on Darwin, and skipped
+paths do not restore atime. Changes observed during skipped/already-shared
+operations must not all be attributed to the engine without reader evidence.
+Content, mode, ownership, birth time and mtime checks remain enforced. The
+accepted writable-mmap/descriptor/rename contract does not waive metadata
+preservation.
 
 Each runtime includes helpers, templates, Git LFS, `COPYING`, LFS's MIT
 license, `SOURCES`, build provenance, and a sealed file inventory. macOS
