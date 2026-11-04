@@ -116,42 +116,23 @@ jobs:
           softwareupdate --install-rosetta --agree-to-license
           arch -x86_64 "$RUNNER_TEMP/universal/bin/git" version --build-options
           arch -x86_64 "$RUNNER_TEMP/universal/bin/git-lfs" version
-          arch -x86_64 /bin/sh -c '
-            set -e
-            cd "$1"
-            command -V uname
-            uname -s
-            uname -m
-            for suite in t241[0-6]-*.sh; do
-              if ./$suite --verbose-log -x; then
-                :
-              else
-                cat "test-results/${suite%.sh}.out"
-                exit 1
-              fi
-            done
-          ' sh "$RUNNER_TEMP/x64/source/t"
+          python3 contrib/pwrgit-runtime/test-macos.py --arch x64 --source "$RUNNER_TEMP/x64/source" --output "$RUNNER_TEMP/source-tests/x64"
       - name: Focused ARM64 source regressions
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/arm64/source/t"
-          for suite in t241[0-6]-*.sh; do
-            if ./$suite --verbose-log -x; then
-              :
-            else
-              cat "test-results/${suite%.sh}.out"
-              exit 1
-            fi
-          done
-      - name: Preserve macOS source regression diagnostics
-        if: ${{ failure() }}
+          python3 contrib/pwrgit-runtime/test-macos.py --arch arm64 --source "$RUNNER_TEMP/arm64/source" --output "$RUNNER_TEMP/source-tests/arm64"
+      - name: Preserve macOS source regression conditions and diagnostics
+        if: ${{ always() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: macos-source-test-failures
+          name: macos-source-tests
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/arm64/source/t/test-results/
             ${{ runner.temp }}/x64/source/t/test-results/
+            ${{ runner.temp }}/source-tests/*/conditions.json
+            ${{ runner.temp }}/source-tests/*/ordinary-fs-usage.log
+            ${{ runner.temp }}/source-tests/*/ordinary-test-results/
       - name: Archive immutable signing input and provenance
         id: archive
         run: |

@@ -86,6 +86,26 @@ CA store, `/bin/sh`, and SSH remain host requirements. Linux tests cover
 relocation, the baseline ABI, ordinary fallback, and actual XFS/btrfs sharing.
 Windows is intentionally excluded from this release at the user's request.
 
+macOS package smoke checks run on the runner's ordinary APFS volume. The
+seven focused source suites additionally run on a private APFS image mounted
+with `noatime`, verified by mount flags and an actual read control. This is
+the controlled condition for their strict before/after metadata assertions;
+the assertions and frozen source are unchanged. The x64 leg also retains an
+ordinary-volume reproduction of already-shared and hardlink/sparse cases,
+with a bounded filesystem reader trace. Both conditions and their results
+are uploaded even when a suite fails.
+
+The macOS 26 ordinary-volume failure changed only atime in nine cases. A
+`noatime` suite pass does not establish an unchanged-atime guarantee on an
+ordinary mount. APFS replacement copies and verifies the target's captured
+atime before publication; this does not suppress access-time updates from
+other reads. Dry-run comparisons use ordinary reads on Darwin, and skipped
+paths do not restore atime. Changes observed during skipped/already-shared
+operations must not all be attributed to the engine without reader evidence.
+Content, mode, ownership, birth time and mtime checks remain enforced. The
+accepted writable-mmap/descriptor/rename contract does not waive metadata
+preservation.
+
 Each runtime includes helpers, templates, Git LFS, `COPYING`, LFS's MIT
 license, `SOURCES`, build provenance, and a sealed file inventory. macOS
 includes `git-credential-osxkeychain`; neither POSIX package includes GCM's
