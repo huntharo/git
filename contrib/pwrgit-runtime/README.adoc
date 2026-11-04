@@ -43,6 +43,18 @@ config. Reflink smoke fixtures explicitly enable the feature in their own
 repository. Build/probe environment isolation is temporary and is not an
 environment installed into the consuming apps.
 
+Linux `.3` also restores Dugite's `ssl/cacert.pem` payload contract. The
+unmodified Mozilla PEM published by curl for `2026-10-20` is checksum-pinned
+in `build-lock.json`, included in the sealed file inventory, and recorded in
+the build manifest and `SOURCES`. `NOTICE.ca-bundle` preserves its origin
+and `LICENSE.ca-bundle` supplies the complete MPL 2.0 text. Consumers use
+their existing `GIT_SSL_CAINFO=<runtime>/ssl/cacert.pem` behavior; no distro
+trust-store discovery is added to the apps. As with Dugite, this variable
+takes precedence over `http.sslCAInfo` configuration; an explicit process or
+caller CA override remains the consumer's responsibility. macOS ships no
+CA file and keeps its native trust behavior. Trust-root updates require a
+new checksum-pinned runtime release, not mutation of published assets.
+
 == Fork branches and upstream submissions
 
 `master` tracks upstream Git. `pwrgit` is this fork's default release branch
@@ -100,9 +112,10 @@ python3 contrib/pwrgit-runtime/smoke.py /tmp/git-universal \
 The CI workflow builds Linux x64/ARM64 in a digest-pinned Ubuntu 22.04
 container against an immutable Ubuntu archive snapshot. It bundles
 non-glibc libraries with relative ELF RPATHs, their notices, exact source
-package inputs, version inventory, and checksums. glibc 2.35, the system
-CA store, `/bin/sh`, and SSH remain host requirements. Linux tests cover
-relocation, the baseline ABI, ordinary fallback, and actual XFS/btrfs sharing.
+package inputs, version inventory, and checksums. glibc 2.35, `/bin/sh`,
+and SSH remain host requirements. Linux tests cover
+relocation, the baseline ABI, ordinary fallback, HTTPS with the bundled CA
+file and Dugite environment, and actual XFS/btrfs sharing.
 Windows is intentionally excluded from this release at the user's request.
 
 macOS package smoke checks and source suites t2410--t2415 run on the runner's

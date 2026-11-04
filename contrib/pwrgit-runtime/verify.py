@@ -10,6 +10,7 @@ import tempfile
 
 from runtime import is_macho, ldd_dependencies, run, verify_inventory, write_json
 from configuration import verify_configuration
+from certificates import verify_ca_bundle
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('root', type=Path)
@@ -27,6 +28,9 @@ env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_',
 env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM='1',
            PATH=str(root / 'bin') + os.pathsep + '/usr/bin:/bin:/usr/sbin:/sbin',
            GIT_TERMINAL_PROMPT='0')
+ca_bundle = verify_ca_bundle(root, m)
+if ca_bundle:
+    env['GIT_SSL_CAINFO'] = str(root / ca_bundle['path'])
 git = root / 'bin/git'
 assert run([git, '--version'], env=env) == 'git version ' + m['version']
 build_options = run([git, 'version', '--build-options'], env=env).splitlines()
@@ -84,7 +88,7 @@ result = dict(version=m['version'], source_revision=m['source_revision'],
               build_options=build_options,
               architecture=m['architecture'], sealed_inventory=True,
               relocated_exec_path=True, lfs=True, templates=True,
-              configuration=configuration, executables=executables)
+              configuration=configuration, ca_bundle=ca_bundle, executables=executables)
 if a.report:
     write_json(a.report, result)
 print(json.dumps({k: v for k, v in result.items() if k != 'executables'}, sort_keys=True))

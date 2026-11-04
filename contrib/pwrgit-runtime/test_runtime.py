@@ -1,6 +1,8 @@
 import io
 import errno
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import shutil
@@ -9,8 +11,73 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from runtime import extract, ldd_dependencies, seal, verify_inventory
+from runtime import download, extract, ldd_dependencies, seal, verify_inventory
 from configuration import verify_configuration
+from certificates import install_ca_bundle, verify_ca_bundle
+
+
+class CertificateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.runtime = self.root / 'runtime'
+        self.runtime.mkdir()
+        self.entry = json.loads(Path(__file__).with_name('build-lock.json').read_text())['ca_bundle']
+
+    def test_install_uses_pinned_bytes_and_seals_exact_dugite_path(self):
+        data = b'cached fixture CA input'
+        entry = dict(self.entry, sha256=hashlib.sha256(data).hexdigest())
+        (self.root / Path(entry['url']).name).write_bytes(data)
+        with patch('runtime.urllib.request.urlopen') as network:
+            install_ca_bundle(self.runtime, self.root, entry)
+        network.assert_not_called()
+        target = self.runtime / 'ssl/cacert.pem'
+        self.assertEqual(target.read_bytes(), data)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+        self.assertIn(entry['url'], (self.runtime / 'NOTICE.ca-bundle').read_text())
+        seal(self.runtime)
+        inventory = json.loads((self.runtime / 'runtime-files.json').read_text())
+        self.assertEqual(inventory['ssl/cacert.pem']['sha256'], entry['sha256'])
+        target.write_bytes(b'changed CA input')
+        with self.assertRaises(ValueError):
+            verify_inventory(self.runtime)
+
+    def test_linux_requires_its_bundle(self):
+        with self.assertRaisesRegex(ValueError, 'regular, readable'):
+            verify_ca_bundle(self.runtime, dict(platform='linux', ca_bundle=self.entry))
+
+    def test_macos_does_not_gain_a_ca_override(self):
+        self.assertIsNone(verify_ca_bundle(self.runtime, dict(platform='darwin')))
+        (self.runtime / 'ssl').mkdir()
+        (self.runtime / 'ssl/cacert.pem').write_bytes(b'wrong platform')
+        with self.assertRaises(ValueError):
+            verify_ca_bundle(self.runtime, dict(platform='darwin'))
+
+    def test_download_verifies_dated_curl_input_and_cache(self):
+        data = b'fixed input'
+        checksum = hashlib.sha256(data).hexdigest()
+        target = self.root / 'download.pem'
+        with patch('runtime.urllib.request.urlopen', return_value=io.BytesIO(data)) as network:
+            self.assertEqual(download(self.entry['url'], checksum, target), target)
+            self.assertEqual(download(self.entry['url'], checksum, target), target)
+        self.assertEqual(network.call_count, 1)
+        self.assertEqual(target.read_bytes(), data)
+
+    def test_download_rejects_mutable_or_unapproved_ca_urls(self):
+        for url in ('https://curl.se/ca/cacert.pem', 'http://curl.se/ca/cacert-2026-10-20.pem',
+                    'https://curl.se.example/ca/cacert-2026-10-20.pem',
+                    self.entry['url'] + '?latest=true'):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                download(url, '0' * 64, self.root / 'rejected')
+
+    def test_download_rejects_wrong_checksum_without_publishing_file(self):
+        target = self.root / 'download.pem'
+        with patch('runtime.urllib.request.urlopen', return_value=io.BytesIO(b'wrong')):
+            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                download(self.entry['url'], '0' * 64, target)
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_suffix('.partial').exists())
 
 
 class ConfigurationTests(unittest.TestCase):

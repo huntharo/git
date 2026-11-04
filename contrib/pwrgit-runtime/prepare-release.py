@@ -58,6 +58,8 @@ for path in sorted(a.inputs.rglob('*.tar.gz')):
         if sha256(path) != a.expected_macos_sha256 or m['signing'] != 'Developer ID Application: PwrDrvr LLC (T44CNHC4UH)' or m['notarized'] is not True:
             raise ValueError('Mac payload must match protected signer output and Accepted notarization')
         entry['team_id'] = 'T44CNHC4UH'
+    else:
+        entry['ca_bundle'] = m['ca_bundle']
     if key in catalog['assets']:
         raise ValueError(f'Duplicate runtime: {key}')
     catalog['assets'][key] = entry
@@ -81,6 +83,7 @@ for report in sorted(a.inputs.rglob('*.json')):
     'Git LFS 3.7.1, helpers, templates, notices, sources, symbols and checksums are included.\n'
     'macOS: final universal executables signed by PwrDrvr LLC (T44CNHC4UH) and accepted by Apple notarization.\n'
     'Linux: x64/ARM64, bundled non-glibc libraries and their exact source inputs; glibc 2.35 baseline.\n'
+    'Linux includes the checksum-pinned Mozilla CA bundle at ssl/cacert.pem (MPL-2.0), matching Dugite; macOS keeps its native trust behavior.\n'
     'The macOS 13 deployment target is not an older-OS execution guarantee. See the explicit tested state in the manifest and attached reports.\n'
     'Known Git/APFS stat-trust and writable-mmap blind spots still apply. No arbitrary concurrent-writer guarantee is made.\n'
     'Both apps pin runtime-manifest.json and preserve the same macOS executable bytes/signatures. Each app still needs its own notarization.\n'
