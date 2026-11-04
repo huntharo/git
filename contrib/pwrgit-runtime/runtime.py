@@ -45,8 +45,9 @@ def write_json(path, data):
 
 
 def download(url, checksum, destination):
-    if not url.startswith('https://github.com/') or len(checksum) != 64:
-        raise ValueError('Expected a checksum-pinned GitHub HTTPS dependency')
+    dated_ca = re.fullmatch(r'https://curl\.se/ca/cacert-\d{4}-\d{2}-\d{2}\.pem', url)
+    if not (url.startswith('https://github.com/') or dated_ca) or not re.fullmatch(r'[0-9a-f]{64}', checksum):
+        raise ValueError('Expected a checksum-pinned GitHub or dated curl.se CA dependency')
     destination = Path(destination)
     if not destination.exists() or sha256(destination) != checksum:
         partial = destination.with_suffix('.partial')

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 
 from runtime import HERE, download, extract, is_macho, package, run, seal, sha256, unpack_lfs, write_json
+from certificates import install_ca_bundle
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output', type=Path, required=True)
@@ -93,7 +94,7 @@ with tarfile.open(lfs_source) as t:
     with t.extractfile(licenses[0]) as stream:
         (root / 'LICENSE.git-lfs').write_bytes(stream.read())
 (root / 'etc').mkdir(exist_ok=True)
-(root / 'etc/gitconfig').write_text('[checkout]\n\treflink = true\n')
+shutil.copy2(HERE / 'gitconfig', root / 'etc/gitconfig')
 (root / 'SOURCES').write_text(
     f'Git {lock["version"]}: {lock["source"]["repository"]}/tree/{revision}\n'
     f'Frozen source ref: {source_ref}\n'
@@ -124,12 +125,16 @@ for path in sorted(root.rglob('*')):
             run(['strip', '--strip-debug', path])
             run(['objcopy', '--add-gnu-debuglink=' + str(symbol) + '.debug', path])
 if host == 'linux':
+    install_ca_bundle(root, out, lock['ca_bundle'])
     subprocess.run(['python3', str(HERE / 'bundle-linux.py'), str(root), '--output', str(out), '--arch', a.arch], check=True)
     with (root / 'SOURCES').open('a') as notices:
         notices.write(f'Libraries: linux-libraries.json; exact matching source inputs: linux-library-sources-{a.arch}.tar.gz.\n'
                       'Debian source packages include original sources, downstream patches and debian/rules build/relink recipes.\n'
                       'Original Debian copyright notices and full common license texts are in share/licenses/dependencies.\n'
                       'Only ELF RPATH was changed for relocation; no dependency source was modified.\n')
+        notices.write(f'Mozilla CA bundle: {lock["ca_bundle"]["url"]}\n'
+                      f'SHA256: {lock["ca_bundle"]["sha256"]}; installed as ssl/cacert.pem (unmodified readable PEM).\n'
+                      'MPL-2.0 license and source notice: LICENSE.ca-bundle and NOTICE.ca-bundle.\n')
 manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 source_ref=source_ref,
                 source_pull_requests=lock['source']['pull_requests'],
@@ -147,6 +152,8 @@ manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 sdk=run(['xcrun', '--show-sdk-version']) if host == 'darwin' else None,
                 lfs_debug_symbols='Not provided in upstream prebuilt release',
                 optional_components_omitted=['Perl commands', 'Tcl/Tk GUI', 'gettext translations', 'Rust', 'GCM'])
+if host == 'linux':
+    manifest['ca_bundle'] = lock['ca_bundle']
 write_json(root / 'pwrgit-build.json', manifest)
 seal(root)
 package(root, out / f'pwrgit-{lock["version"]}-{revision[:7]}-{host}-{a.arch}-candidate.tar.gz')

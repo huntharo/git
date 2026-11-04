@@ -10,6 +10,7 @@ import tempfile
 import time
 
 from runtime import write_json
+from certificates import verify_ca_bundle
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('runtime', type=Path)
@@ -27,6 +28,12 @@ helper = a.test_tool.resolve()
 env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_'))}
 env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM='1', GIT_TERMINAL_PROMPT='0',
            LC_ALL='C', PATH=str(runtime / 'bin') + ':/usr/bin:/bin:/usr/sbin:/sbin')
+ca_bundle = verify_ca_bundle(runtime, runtime_manifest)
+if ca_bundle:
+    env['GIT_SSL_CAINFO'] = str(runtime / ca_bundle['path'])
+# Match the app/Dugite relocation contract as well as standalone execution.
+env.update(LOCAL_GIT_DIRECTORY=str(runtime), GIT_EXEC_PATH=str(runtime / 'libexec/git-core'),
+           PREFIX=str(runtime), GIT_TEMPLATE_DIR=str(runtime / 'share/git-core/templates'))
 
 
 def cmd(args, cwd, input=None, extra=None):
@@ -48,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
         g(base, 'init', '-q', src)
         for key, value in [('user.name', 'Runtime smoke'), ('user.email', 'runtime@example.invalid'),
                            ('commit.gpgsign', 'false'), ('checkout.workers', str(workers)),
-                           ('checkout.thresholdForParallelism', '0')]:
+                           ('checkout.thresholdForParallelism', '0'), ('checkout.reflink', 'true')]:
             g(src, 'config', key, value)
         g(src, 'lfs', 'install', '--local')
         g(src, 'lfs', 'track', '*.lfs')
@@ -148,5 +155,6 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
                             payload_sha256=hashlib.sha256(data).hexdigest()))
     if a.https:
         assert g(root, '-c', 'credential.helper=', 'ls-remote', 'https://github.com/huntharo/git.git', 'HEAD')
-    write_json(a.report, dict(version=g(root, '--version').decode().strip(), https=a.https, cases=results))
+    write_json(a.report, dict(version=g(root, '--version').decode().strip(), https=a.https,
+                             ca_bundle=ca_bundle, cases=results))
 print(json.dumps({'report': str(a.report), 'workers': [1, 8], 'https': a.https, 'passed': True}))
