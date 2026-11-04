@@ -1,0 +1,230 @@
+= APFS clone metadata measurements
+
+== Decision and source branches
+
+The production change batches a fresh APFS clone's permission mask and birth,
+modification and access times in one descriptor-based `fsetattrlist()` call.
+Previously `fix_up_clone()` used `fchmod()`, `fsetattrlist(CRTIME)` and
+`futimens()`. The regular-file and file-flag checks, xattr stripping before
+permission changes, umask handling and failed-clone cleanup remain in place.
+All three times receive the same nanosecond-resolution clock sample.
+
+The descriptor sharing-query experiment was correct but was not retained in
+production: it did not demonstrate a useful full-clone query improvement and
+made ordinary-file queries slower. The optional diagnostic patch under
+`contrib/reflink/` preserves the tested implementation for reproduction.
+It is not applied by the build.
+
+The baseline is `ada47e445ed68570a72e2b2641c48e36a0f8df63`, the tip of
+`feat/worktree-reshare`. That branch follows `feat/reflink-worktrees`,
+`feat/reflink-native-checks` and `feat/reflink-converted-checkouts`.
+`master` tracks upstream Git. `pwrgit` maintains runtime packaging; runtime
+`.3` pins this CoW source through `build-lock.json`. This source PR targets
+`feat/worktree-reshare`; integrating a tested source freeze into the runtime
+is a separate release operation.
+
+== Why the PwrDisk query change did not transfer directly
+
+https://github.com/pwrdrvr/PwrDisk/pull/118[PwrDisk PR 118] establishes that
+requesting `ATTR_CMNEXT_PRIVATESIZE` can walk freeable extents even when APFS
+knows a file is fully shared. Its existing metadata request already includes
+the richer clone identity and sharing attributes. Git's original request
+contains only returned attributes and private size, following `fstat()`.
+Confirming full sharing therefore adds work to Git's existing request.
+
+The experiment requests current inode, device, physical device, clone ID,
+data allocation, extended flags and clone reference count from the same open
+descriptor, without private size. It requires every returned bit, a complete
+packed record, inode/device matching a freshly read descriptor stat, a valid
+physical device and clone ID, nonnegative bounded data allocation,
+`EF_SHARES_ALL_BLOCKS`, and at least two clone references. Otherwise it uses
+the original private-size query. A differing clone ID and inode is not used
+as proof. Descriptor identity avoids reopening a pathname or substituting a
+logical device number for physical volume identity.
+
+An initial prototype added this request after `fstat()` and was slower.
+Replacing the internal stat with a richer allocation request also did not
+help; https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_attrlist.c[Apple's single-file attribute implementation]
+can perform resource-fork xattr work for `ATTR_FILE_ALLOCSIZE`. The recorded candidate retains the original stat allocation
+semantics and reuses the caller's immediately preceding descriptor stat.
+Its content, donor, final-stat and rename race checks are unchanged.
+Even that candidate's full-clone query gain was too small to justify its
+ordinary-file regression. No metadata query or race-check change is enabled
+in production.
+
+== Method
+
+Apple M2 Max, 12 physical cores, 32 GiB, macOS 27.2, Apple clang 21.0.0.
+Both builds use `DEVELOPER=1`, `-g -O2`, SHA1DC, and matching
+`NO_GETTEXT`, `NO_TCLTK`, `NO_OPENSSL`, `NO_CURL`, `NO_EXPAT` settings.
+Their generated compiler and linker options compare equal. The baseline
+uses the new benchmark helper with its compatibility path for the old API.
+
+Only generated fixtures and a bounded set of public tracked Git source
+files are accessed. The fixtures live on a private 1 GiB sparse APFS image
+mounted with `noatime`; mount flags and an actual read control verified it.
+The source tree has 1,536 nonempty C/header/shell files. The dependency-style
+fixture has 2,400 generated JavaScript files in 100 package directories.
+Each adds an empty file and symlink. No installed dependency tree or disk
+scan is used.
+
+Caches are warm, with one excluded warm-up per cell and 20 measured pairs,
+alternating before/after order. Metadata cells additionally alternate the
+query candidate in reverse order on alternate repetitions. Each invocation
+is a fresh process. There is no global cache purge and no concurrent build,
+test or benchmark from this task during the measured cells. Other desktop
+activity is not controlled. Ranges and paired wins are retained in the
+results, including outliers.
+
+Metadata cells make 20 passes over 256 already-open descriptors: 5,120 usage
+queries per process, including the caller stat used by worktree repair.
+The ordinary control is explicitly rewritten into independent files and
+verified to have private allocation; it is not the donor of the shared tree.
+Full checkout cells time `git worktree add` with one checkout worker and
+explicit `--reflink` or `--no-reflink`. Trace2 is enabled equally for both
+checkout builds. The already-shared repair control times `worktree reflink`.
+
+Wall time comes from `perf_counter_ns`; child user/system CPU comes from
+`getrusage(RUSAGE_CHILDREN)`. Setup, content and metadata verification,
+allocation queries and worktree removal are outside the timed interval.
+The interposer is used only in separate untimed validation/counting runs.
+These are small-tree results on this APFS image, not whole-disk performance
+claims or timings of a shipped application runtime.
+
+== Correctness
+
+The native oracle compares allocated bytes and private bytes against the
+original unconditional descriptor query for all 204 generated files. Cases
+include full and modified clones, sparse growth, hardlinks, empty files,
+resource forks, ordinary files and removed clone peers. The query candidate
+agrees on every file. All 85 injected missing-attribute, truncated/oversized
+record, identity, allocation, flags, reference-count and unsupported-query
+cases fall back. A confirmed full clone makes one cheap request and zero
+private-size requests; the original binary makes one private-size request.
+
+The production clone repair test checks modes under umasks 022, 077, 002
+and 027, exact birth/access/modification nanoseconds, fresh timestamps,
+content, stripped donor xattrs and zero private data allocation. Every full
+checkout additionally checks each tracked file's content, owner/group,
+mode, xattrs and timestamps, empty files and symlink targets, plus the
+original private-size oracle. Every nonempty CoW file must have zero
+private allocation; ordinary copies must have fully private allocation.
+Trace2 requires all expected nonempty files to be cloned without clone or
+verification failures. Nanosecond timestamps remain unchanged by reads on
+the noatime volume.
+
+Suites t2410--t2416 report 202 passed cases and seven prerequisite skips
+(209 total): POSIX setfacl, NODATACOW, cross-filesystem APFS/HFS+ image
+cases and cleanup, and Linux /dev/shm. The existing fsmonitor test in t2413
+requires an unrestricted daemon; it passes outside the sandbox. t2416 runs
+on the noatime image. New suite t2417 passes its oracle and four-umask clone
+repair checks. Existing donor/content/metadata/concurrency tests retain
+their original assertions and accepted APFS race contract.
+
+== Production before/after results
+
+Medians in milliseconds. System CPU is reported separately from wall time.
+
+[cols="1,2,1,1,1,1,1",options="header"]
+|===
+|Fixture |Operation |Before wall |After wall |Wall change |Before system |After system
+|source |checkout-copy |298.836 |301.702 |+1.0% |174.455 |177.470
+|source |checkout-cow |345.207 |330.581 |-4.2% |316.299 |301.283
+|source |reshare-shared |48.450 |51.530 |+6.4% |37.677 |39.405
+|dependencies |checkout-copy |434.394 |438.773 |+1.0% |251.842 |249.702
+|dependencies |checkout-cow |503.859 |463.479 |-8.0% |469.005 |433.122
+|dependencies |reshare-shared |43.458 |44.199 |+1.7% |35.597 |36.316
+|===
+
+[cols="1,2,2,2,1",options="header"]
+|===
+|Fixture |Operation |Before wall range |After wall range |After wins
+|source |checkout-copy |228.763–2035.053 |245.128–1877.184 |10/20
+|source |checkout-cow |327.095–1228.309 |306.699–1606.968 |15/20
+|dependencies |checkout-copy |390.891–2709.528 |357.054–488.349 |11/20
+|dependencies |checkout-cow |481.289–599.883 |444.538–489.092 |20/20
+|===
+
+CoW wall medians improve 4.2% and 8.0%; system CPU falls 4.7% and 7.7%.
+Ordinary-copy wall medians rise about 1%; their system CPU changes by
++1.7% and -0.8%. Already-shared repair is a control: the production patch
+does not enter clone repair on those paths and shows no improvement.
+
+Separate interposer runs count exactly 1,536/2,400 calls to each of
+`fchmod`, `fsetattrlist` and `futimens` before; afterward they count
+0 / 1,536 / 0 and 0 / 2,400 / 0 respectively. This removes two repair
+syscalls per nonempty cloned file.
+
+== Rejected query candidate
+
+Medians for 5,120 usage queries per process, milliseconds:
+
+[cols="1,2,1,1,1,1,1",options="header"]
+|===
+|Fixture |Files |Before wall |Candidate wall |Wall change |Before system |Candidate system
+|source |metadata-ordinary |31.162 |41.723 |+33.9% |25.995 |36.360
+|source |metadata-shared |26.049 |25.656 |-1.5% |20.791 |20.388
+|dependencies |metadata-ordinary |31.250 |42.470 |+35.9% |26.116 |36.894
+|dependencies |metadata-shared |25.857 |25.615 |-0.9% |20.527 |20.615
+|===
+
+The full-clone wall difference is about 1%; ordinary-file wall time
+regresses 33.9% and 35.9%. This does not justify enabling the richer query
+for every Git file. The production metadata-query controls retain the
+original implementation and remain within about 1% at their wall medians.
+
+All 480 measured samples, ranges, paired wins, CPU readings, binary SHA-256s,
+fixture digests and untimed syscall counts are in
+`contrib/reflink/apfs-metadata-results.json`. It contains only generated
+fixture measurements and public source digests, with no paths or traces.
+
+== Reproduction
+
+Run from an isolated checkout of this change. Build before and after with
+identical settings, copying only the benchmark helper into the baseline.
+For a baseline matching this run, use an archive of the frozen commit:
+
+----
+set -e
+apfs_before=$(mktemp -d /tmp/git-apfs-before.XXXXXX)
+apfs_after=$PWD
+git archive ada47e445ed68570a72e2b2641c48e36a0f8df63 |
+    tar -x -C "$apfs_before"
+cp t/helper/test-reflink.c "$apfs_before/t/helper/test-reflink.c"
+git worktree add --detach /tmp/git-apfs-query HEAD
+apfs_query=/tmp/git-apfs-query
+git -C "$apfs_query" apply --unidiff-zero \
+    "$apfs_after/contrib/reflink/apfs-metadata-query-experiment.patch"
+for tree in "$apfs_before" "$apfs_after" "$apfs_query"
+do
+    make -C "$tree" -j8 DEVELOPER=1 NO_GETTEXT=YesPlease \
+        NO_TCLTK=YesPlease NO_OPENSSL=YesPlease NO_CURL=YesPlease \
+        NO_EXPAT=YesPlease git t/helper/test-tool
+done
+----
+
+Use a fresh APFS fixture volume, with no other builds or tests running:
+
+----
+hdiutil create -size 1g -fs APFS -volname GitAPFSMetadata \
+    -type SPARSE /tmp/git-apfs-fixtures.sparseimage
+mkdir /tmp/git-apfs-volume
+hdiutil attach /tmp/git-apfs-fixtures.sparseimage -nobrowse \
+    -mountpoint /tmp/git-apfs-volume
+mount -u -o noatime /tmp/git-apfs-volume
+mount | grep /tmp/git-apfs-volume
+python3 contrib/reflink/apfs-metadata.py \
+    --before "$apfs_before" --after "$apfs_after" \
+    --metadata-candidate "$apfs_query" \
+    --root /tmp/git-apfs-volume/run --repetitions 20
+hdiutil detach /tmp/git-apfs-volume
+----
+
+`--root` must not exist. `--validate-only` runs the oracle, optional query
+fault checks, and four-umask clone repair checks without benchmarks.
+`t2417-apfs-metadata.sh` runs the production validation subset. The query
+patch defines its compatibility macro only in the diagnostic build;
+ordinary builds continue to use the original private-size query.
+The Python harness requires Python 3.9+ and the macOS C toolchain.
+The diagnostic interposer is never linked into Git and is never loaded
+for measured cells.
