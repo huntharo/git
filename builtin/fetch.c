@@ -42,6 +42,7 @@
 #include "trace.h"
 #include "trace2.h"
 #include "bundle-uri.h"
+#include "tempfile.h"
 
 #define FORCED_UPDATES_DELAY_WARNING_IN_MS (10 * 1000)
 
@@ -1935,6 +1936,49 @@ static void collect_updated_tips(struct oidset *tips, struct ref *ref_map)
 	}
 }
 
+static void write_advertised_refs(struct remote *remote, const struct ref *refs)
+{
+	const char *dir = getenv("GIT_ADVERTISED_REFS_DIR");
+	const unsigned char *p;
+	struct strbuf path = STRBUF_INIT;
+	struct strbuf template = STRBUF_INIT;
+	struct tempfile *tempfile = NULL;
+	FILE *fp;
+
+	if (!dir || !*dir || !remote_is_configured(remote, 0))
+		return;
+
+	/* Hex preserves every byte, even on case-insensitive filesystems. */
+	strbuf_addf(&path, "%s/remote-", dir);
+	for (p = (const unsigned char *)remote->name; *p; p++)
+		strbuf_addf(&path, "%02x", *p);
+	strbuf_addstr(&path, ".refs");
+	strbuf_addf(&template, "%s/.advertised-refs-XXXXXX", dir);
+
+	tempfile = mks_tempfile(template.buf);
+	if (!tempfile)
+		goto warn;
+	fp = fdopen_tempfile(tempfile, "w");
+	if (!fp)
+		goto warn;
+
+	/* The transport already represents peeled tags as <name>^{} refs. */
+	for (; refs; refs = refs->next)
+		if (fprintf(fp, "%s\t%s\n", oid_to_hex(&refs->old_oid),
+			    refs->name) < 0)
+			goto warn;
+	if (rename_tempfile(&tempfile, path.buf))
+		goto warn;
+	goto out;
+
+warn:
+	warning_errno(_("could not write advertised refs to '%s'"), path.buf);
+	delete_tempfile(&tempfile);
+out:
+	strbuf_release(&template);
+	strbuf_release(&path);
+}
+
 static int do_fetch(struct transport *transport,
 		    struct refspec *rs,
 		    const struct fetch_config *config,
@@ -2023,6 +2067,7 @@ static int do_fetch(struct transport *transport,
 		trace2_region_enter("fetch", "remote_refs", the_repository);
 		remote_refs = transport_get_remote_refs(transport,
 							&transport_ls_refs_options);
+		write_advertised_refs(transport->remote, remote_refs);
 		trace2_region_leave("fetch", "remote_refs", the_repository);
 	} else
 		remote_refs = NULL;

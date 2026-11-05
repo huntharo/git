@@ -302,6 +302,42 @@ include::includes/cmd-config-section-all.adoc[]
 
 include::config/fetch.adoc[]
 
+ENVIRONMENT
+-----------
+`GIT_ADVERTISED_REFS_DIR`::
+	If set to a non-empty directory path, write the refs advertised by
+	each configured remote to a file in that existing directory. This
+	also works through linkgit:git-pull[1], `--all`, and `--multiple`.
+	Fetches using a URL or path instead of a configured remote name are
+	skipped. When unset or empty, no advertisement files are written.
++
+The filename is `remote-<hex>.refs`, where `<hex>` is the lowercase
+hexadecimal encoding of every byte of the remote name. For example,
+`origin` uses `remote-6f726967696e.refs`. This encoding avoids path
+separators and collisions on case-insensitive filesystems. Distinct
+remotes can write concurrently; simultaneous fetches of the same remote
+replace the same file, with the last successful writer winning.
++
+Each line has the linkgit:git-ls-remote[1] format: an object ID, a tab,
+and a refname, followed by a newline. Annotated tags include a second
+line with the peeled object ID and a refname ending in `^{}`. All refs
+returned by the transport are included, even existing tags that fetch
+does not update. No extra refs are requested: protocol version, refspecs,
+tag options, and server filtering may limit the advertisement. In
+particular, protocol v2 normally omits tags with `--no-tags`.
++
+The file is written immediately after the initial ref advertisement,
+before ref updates or pack transfer, so it can exist even if fetch later
+fails. An empty advertisement produces an empty file. A temporary file
+in the same directory is renamed over the destination atomically.
+Write errors produce a warning without failing the fetch; an older
+file may remain if no new advertisement is written.
++
+Use an absolute path to avoid differences in child-process working
+directories. Use a fresh directory per operation if freshness matters,
+and separate directories for different repositories: the filenames
+identify only remote names, including in recursive submodule fetches.
+
 BUGS
 ----
 Using `--recurse-submodules` can only fetch new commits in submodules that are

@@ -507,6 +507,12 @@ These environment variables apply to 'all' core Git commands. Nb: it
 is worth noting that they may be used/overridden by SCMS sitting above
 Git so take care if using a foreign front-end.
 
+`GIT_ADVERTISED_REFS_DIR`::
+	If set to a non-empty directory path, linkgit:git-fetch[1] atomically
+	writes each configured remote's advertised refs there in
+	linkgit:git-ls-remote[1] format. See linkgit:git-fetch[1] for filenames
+	and details. This also applies to fetches run by linkgit:git-pull[1].
+
 `GIT_INDEX_FILE`::
 	This environment variable specifies an alternate
 	index file. If not specified, the default of `$GIT_DIR/index`
