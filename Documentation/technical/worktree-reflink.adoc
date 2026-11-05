@@ -71,9 +71,23 @@ that clone with the opened target, copies target metadata using public
 fcopyfile APIs, verifies ownership/mode/times/xattrs/ACLs, and checks captured
 descriptor/path stats before rename. Special flags and set-ID targets skip.
 Mode, owner, group, mtime, atime, birth time, xattrs and ACLs are preserved when
-verification succeeds. Inode and ctime change. Under the index lock,
+verification succeeds, except for the kernel-managed `com.apple.provenance`
+xattr. As in checkout's xattr cleanup, this attribute is left to macOS rather
+than stripped or forged. Native metadata-copy probes have observed successful
+`fcopyfile(COPYFILE_METADATA)` leaving different provenance on the target and
+new clone. The verifier therefore ignores exactly this name, including its
+presence or absence, while comparing the complete remaining name sets and
+every value byte for byte. Quarantine and similarly prefixed names have no
+exception. This observation does not establish when macOS behavior changed,
+or promise a public interpretation of provenance values.
+
+Inode and ctime change. Under the index lock,
 `update_ce_after_write()` records the replacement's actual stat, with normal
 index writing/racy handling. Failures do not invent old metadata.
+APFS dry-run compares bytes without creating a replacement or testing metadata
+copy. Its eligibility and potential reduction remain estimates; an apply can
+still skip a candidate with `metadata-unavailable` if metadata cannot be copied
+and verified.
 The public interfaces are described by Apple's
 https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/clonefile.2[clonefile(2)]
 and https://github.com/apple-oss-distributions/copyfile/blob/main/copyfile.3[copyfile(3)].
@@ -106,6 +120,60 @@ held the later writes. This evidence is separate from regressions that detect
 ordinary target writes, source writes, source/target path replacement and a
 concurrent edit during the hard-reset repair pass. No private entitlement or
 runtime/application replacement is used.
+
+Provenance regression
+---------------------
+
+Independent native metadata-copy probes on macOS 27.0.1 (26A434, M5 Max) and
+27.2 (26B123, M2 Max) observed this provenance mismatch despite successful
+metadata-copy calls and matching copyable stat fields. A target without
+provenance could also leave provenance present on the new file. This behavior
+therefore predates 27.2; the observations do not establish when it began or
+assign publicly guaranteed meanings to the attribute's bytes. Prior successful
+same-application fixtures did not distinguish these cases.
+
+`t2417` runs `contrib/reflink/apfs-reshare-provenance.py`, a native full-command
+oracle with a test-only Darwin interposer. It models five provenance states:
+different, target-only, clone-only, equal and absent. Each is crossed with
+17 metadata scenarios. Positive cases cover both bare files and ordinary
+xattrs (including an empty value), a similarly prefixed attribute, and an ACL.
+Negative cases cover ordinary value/size/name changes, missing and extra
+attributes, quarantine addition/value/removal, name-list/value read errors,
+malformed lists, mode, nanosecond mtime and ACL changes. Faults affect only the
+temporary clone or the verification syscall replies. File data, copyable
+xattrs, ACLs, stat fields and allocation use real disposable APFS files.
+
+The oracle checks exact contents and copyable metadata, actual private data
+allocation, inode replacement only on success, and a metadata-only idempotent
+second pass. The unchanged PR #10 build fails the otherwise-valid different,
+target-only and clone-only provenance cases with `metadata-unavailable`;
+the fixed build passes all 85 cases. Existing `t2416` covers dirty files,
+concurrent writes and path replacements without altering their protections.
+
+This is controlled syscall interposition, not automated launching of two
+responsible applications. It does not attempt to forge real provenance with
+`xattr -w`, strip it, or require a particular real provenance value. Native
+cross-application observations motivate the model; the deterministic regression
+can run without those applications or private worktrees. Reproduce on APFS:
+
+----
+make -j4 DEVELOPER=1 NO_RUST=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease
+python3 contrib/reflink/apfs-reshare-provenance.py --build "$PWD" \
+    --root /tmp/new-reshare-provenance-fixture
+----
+
+Use a nonexistent scratch root. `--provenance different`, `target-only` or
+`clone-only` isolates a pre-fix failure. APFS dry-run remains a byte-comparison
+estimate; it does not promise that a later metadata copy will succeed.
+
+Native M2 validation: `t2410` through `t2417` report 204 passes and seven
+prerequisite skips (211 total), including all 85 oracle scenarios. The full
+`t2413` attributes script passes outside the sandbox, where its fsmonitor
+daemon can run. All 261 unit tests pass, as do the developer build, test lints,
+Meson test-list check, documentation and builtin checks, Python compilation,
+strict interposer compilation and whitespace checks. The test-list registration
+and porcelain heading underline are corrected so the standard checks include
+`t2417` and accept the worktree documentation.
 
 Validation and measurements
 ---------------------------
