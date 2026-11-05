@@ -132,10 +132,25 @@ therefore predates 27.2; the observations do not establish when it began or
 assign publicly guaranteed meanings to the attribute's bytes. Prior successful
 same-application fixtures did not distinguish these cases.
 
+The M5 control crossed the packaged signed Git .3 and selected ad-hoc Git .3
+as fixture creator and re-share runner under one PwrAgent launcher. All four
+combinations created PwrAgent-provenance files and reduced 131,072 private data
+bytes to zero. These controls support modeling file-creation/responsible-app
+context independently of Git executable signing or the executable's own
+provenance. The read-only foreign-provenance metadata-copy probe still failed
+strict xattr equality while all ordinary xattrs and copyable stat fields
+matched and the existing source's stat remained unchanged. Its scratch content
+was independently generated; no existing source data was cloned or re-shared.
+Responsible-app launch/creation history is implicated, but the controls do not
+reconstruct the actor or scope of historical maintenance. Current shared files
+cannot distinguish sharing at checkout from sharing in a later repair pass.
+
 `t2417` runs `contrib/reflink/apfs-reshare-provenance.py`, a native full-command
 oracle with a test-only Darwin interposer. It models five provenance states:
 different, target-only, clone-only, equal and absent. Each is crossed with
-17 metadata scenarios. Positive cases cover both bare files and ordinary
+17 metadata scenarios. These are per-file metadata states, independent of
+executable identity; the equal-provenance controls deliberately pass.
+Positive cases cover both bare files and ordinary
 xattrs (including an empty value), a similarly prefixed attribute, and an ACL.
 Negative cases cover ordinary value/size/name changes, missing and extra
 attributes, quarantine addition/value/removal, name-list/value read errors,
