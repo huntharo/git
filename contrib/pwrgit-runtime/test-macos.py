@@ -38,10 +38,10 @@ def read_probe(root):
                 atime_changed=before['atime_ns'] != after['atime_ns'])
 
 
-def suite(source, arch, root, name, args=()):
+def suite(source, arch, root, name, args=(), env=None):
     result = subprocess.run(['/usr/bin/arch', arch, '/bin/sh', './' + name,
                              '--verbose-log', '-x', '--root=' + str(root), *args],
-                            cwd=source / 't')
+                            cwd=source / 't', env=env)
     if result.returncode:
         log = source / 't/test-results' / (name[:-3] + '.out')
         print(log.read_text() if log.exists() else 'Suite did not produce a log: ' + name,
@@ -93,13 +93,16 @@ def main():
     p.add_argument('--arch', choices=['arm64', 'x64'], required=True)
     a = p.parse_args()
     source, out = a.source.resolve(), a.output.resolve()
-    suites = sorted((source / 't').glob('t241[0-6]-*.sh'))
-    assert len(suites) == 7, 'Expected all seven focused source suites'
+    suites = sorted((source / 't').glob('t241[0-7]-*.sh'))
+    assert len(suites) == 8, 'Expected all eight focused source suites'
+    strict = [path for path in suites if path.name.startswith(('t2416-', 't2417-'))]
+    ordinary = [path for path in suites if path not in strict]
     out.mkdir(parents=True)
     arch = '-x86_64' if a.arch == 'x64' else '-arm64'
     report = dict(architecture=a.arch, strict_metadata_condition='APFS noatime',
                   strict_metadata_suite='t2416-worktree-reflink.sh',
-                  ordinary_volume_suites=[path.name for path in suites[:-1]],
+                  strict_metadata_suites=[path.name for path in strict],
+                  ordinary_volume_suites=[path.name for path in ordinary],
                   ordinary_volume_unchanged_atime_guarantee=False, suites={})
     report['git_build_options'] = subprocess.check_output(
         ['/usr/bin/arch', arch, str(source / 'git'), 'version', '--build-options'], text=True)
@@ -107,7 +110,7 @@ def main():
 
     # Preserve the original root for suites which create their own disk images.
     # Nesting their HFS+ image inside our metadata image can prevent detachment.
-    for path in suites[:-1]:
+    for path in ordinary:
         report['suites'][path.name] = suite(source, arch, source / 't', path.name)
 
     # Preserve evidence from the original environment, including already-shared
@@ -159,9 +162,19 @@ def main():
         assert not report['controlled_read_control']['atime_changed']
         print('Strict metadata regressions: verified APFS noatime; ordinary-volume '
               'access-time behavior is recorded separately.', flush=True)
-        path = suites[-1]
-        assert path.name == 't2416-worktree-reflink.sh'
-        report['suites'][path.name] = suite(source, arch, volume, path.name)
+        # The Python oracles can run natively even when their Git is translated.
+        # Build test-only interposers for both slices so either Git can load them.
+        compiler = out / 'interposer-compiler'
+        compiler.mkdir()
+        cc = compiler / 'cc'
+        cc.write_text('#!/bin/sh\nexec /usr/bin/clang -arch arm64 -arch x86_64 "$@"\n')
+        cc.chmod(0o755)
+        oracle_env = dict(os.environ, PATH=str(compiler) + os.pathsep + os.environ['PATH'])
+        report['interposer_architectures'] = ['arm64', 'x86_64']
+        for path in strict:
+            report['suites'][path.name] = suite(
+                source, arch, volume, path.name,
+                env=oracle_env if path.name.startswith('t2417-') else None)
     finally:
         (out / 'conditions.json').write_text(json.dumps(report, indent=2) + '\n')
         if attached:

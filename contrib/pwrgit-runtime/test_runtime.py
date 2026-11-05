@@ -138,13 +138,14 @@ class MacOSCleanupTests(unittest.TestCase):
         detach.assert_called_once()
         sleep.assert_not_called()
 
-    def test_only_metadata_suite_uses_image_and_other_failures_remain_fatal(self):
+    def test_metadata_suites_use_image_and_interposers_match_both_slices(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name).resolve()
         source, out = root / 'source', root / 'output'
         (source / 't').mkdir(parents=True)
-        names = [f't241{i}-fixture.sh' for i in range(6)] + ['t2416-worktree-reflink.sh']
+        names = [f't241{i}-fixture.sh' for i in range(6)] + [
+            't2416-worktree-reflink.sh', 't2417-apfs-metadata.sh']
         for name in names:
             (source / 't' / name).touch()
 
@@ -160,12 +161,21 @@ class MacOSCleanupTests(unittest.TestCase):
                 patch.object(self.macos.subprocess, 'check_output',
                              side_effect=['git build options', mount]), \
                 patch.object(self.macos, 'read_probe', return_value={'atime_changed': False}), \
-                patch.object(self.macos, 'suite', side_effect=[1, 0, 0, 0, 0, 0, 0]) as suite, \
+                patch.object(self.macos, 'suite', side_effect=[1, 0, 0, 0, 0, 0, 0, 0]) as suite, \
                 patch.object(self.macos, 'detach_volume') as detach:
             self.assertEqual(self.macos.main(), 1)
-        self.assertEqual(suite.call_count, 7)
+        self.assertEqual(suite.call_count, 8)
         self.assertEqual([c.args[2] for c in suite.call_args_list[:6]], [source / 't'] * 6)
-        self.assertEqual(suite.call_args_list[-1].args[2], out / 'metadata-volume')
+        self.assertEqual([c.args[2] for c in suite.call_args_list[-2:]],
+                         [out / 'metadata-volume'] * 2)
+        self.assertEqual(suite.call_args_list[-1].args[3], 't2417-apfs-metadata.sh')
+        oracle_path = suite.call_args_list[-1].kwargs['env']['PATH'].split(':')[0]
+        self.assertEqual(Path(oracle_path), out / 'interposer-compiler')
+        self.assertIn('clang -arch arm64 -arch x86_64 "$@"',
+                      (Path(oracle_path) / 'cc').read_text())
+        conditions = json.loads((out / 'conditions.json').read_text())
+        self.assertEqual(conditions['strict_metadata_suites'], names[-2:])
+        self.assertEqual(conditions['ordinary_volume_suites'], names[:6])
         detach.assert_called_once_with(out / 'metadata-volume')
         self.assertFalse((out / 'metadata.sparseimage').exists())
 
