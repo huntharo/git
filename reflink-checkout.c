@@ -797,38 +797,56 @@ static int same_fd_bytes(int a, int b, off_t size)
 }
 
 #ifdef __APPLE__
-/* copyfile may ignore individual metadata errors: verify before publishing. */
+/*
+ * copyfile may ignore individual metadata errors: verify before publishing.
+ * As in copy.c's strip_xattrs(), leave com.apple.provenance to the kernel.
+ * Metadata copy need not give a new inode the old inode's provenance, so
+ * neither its value nor its presence is part of this equality check.
+ */
 static int same_xattrs(int a, int b)
 {
-	ssize_t len = flistxattr(a, NULL, 0, 0), other = flistxattr(b, NULL, 0, 0);
-	char *names, *av = NULL, *bv = NULL;
+	int fds[2] = { a, b };
+	size_t nr[2] = { 0 };
+	char *names = NULL, *av = NULL, *bv = NULL;
 	int equal = 0;
 
-	if (len < 0 || other != len)
-		return 0;
-	names = xmalloc(len + 1);
-	if (flistxattr(a, names, len, 0) != len)
-		goto out;
-	for (ssize_t i = 0; i < len;) {
-		const char *name = names + i;
-		ssize_t size;
-		size_t n = strnlen(name, len - i);
+	for (size_t side = 0; side < ARRAY_SIZE(fds); side++) {
+		ssize_t len = flistxattr(fds[side], NULL, 0, 0);
 
-		if (n == (size_t)(len - i))
+		if (len < 0)
 			goto out;
-		i += n + 1;
-		size = fgetxattr(a, name, NULL, 0, 0, 0);
-		if (size < 0 || fgetxattr(b, name, NULL, 0, 0, 0) != size)
+		names = xmalloc(len + 1);
+		if (flistxattr(fds[side], names, len, 0) != len)
 			goto out;
-		av = xmalloc(size + 1);
-		bv = xmalloc(size + 1);
-		if (fgetxattr(a, name, av, size, 0, 0) != size ||
-		    fgetxattr(b, name, bv, size, 0, 0) != size || memcmp(av, bv, size))
-			goto out;
-		FREE_AND_NULL(av);
-		FREE_AND_NULL(bv);
+		for (ssize_t i = 0; i < len;) {
+			const char *name = names + i;
+			ssize_t size;
+			size_t n = strnlen(name, len - i);
+
+			if (n == (size_t)(len - i))
+				goto out;
+			i += n + 1;
+			if (!strcmp(name, "com.apple.provenance"))
+				continue;
+			nr[side]++;
+			/* The reverse list only needs to exclude extra names. */
+			if (side)
+				continue;
+			size = fgetxattr(a, name, NULL, 0, 0, 0);
+			if (size < 0 || fgetxattr(b, name, NULL, 0, 0, 0) != size)
+				goto out;
+			av = xmalloc(size + 1);
+			bv = xmalloc(size + 1);
+			if (fgetxattr(a, name, av, size, 0, 0) != size ||
+			    fgetxattr(b, name, bv, size, 0, 0) != size || memcmp(av, bv, size))
+				goto out;
+			FREE_AND_NULL(av);
+			FREE_AND_NULL(bv);
+		}
+		FREE_AND_NULL(names);
 	}
-	equal = 1;
+	/* flistxattr lists each name once; all names from a matched in b. */
+	equal = nr[0] == nr[1];
 out:
 	free(names);
 	free(av);
