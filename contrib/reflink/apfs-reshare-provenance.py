@@ -4,6 +4,8 @@
 Only creates --root (which must not exist). Provenance is modeled at the
 syscall boundary: writing that kernel-owned xattr cannot reliably forge it.
 All data, allocation, other xattrs, ACLs and stat checks use real scratch files.
+Model per-file state independently of Git signing or executable provenance:
+native same-launcher signed/ad-hoc creator/runner controls all share successfully.
 """
 import argparse
 import ctypes as C
