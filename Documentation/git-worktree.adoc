@@ -161,6 +161,9 @@ clone against the actual target, copies and verifies target metadata, and
 replaces its pathname. APFS preserves mode, ownership, mtime, atime, creation
 time, extended attributes and ACLs when these can be copied and verified;
 inode and ctime change, and the index records the replacement's actual stat.
+The kernel-managed `com.apple.provenance` attribute is left to macOS on the
+replacement inode; its value or presence may differ. All other extended
+attributes, including quarantine, must match byte for byte before replacement.
 Files with special flags or set-ID bits are skipped on APFS.
 +
 APFS replacement requires the ordinary Git file-replacement concurrency
@@ -174,7 +177,9 @@ adds stronger dirty-file detection than Git's existing stat trust.
 +
 `--dry-run` compares candidates and reports potential private allocation
 reduction without sharing or replacing files. This is an upper bound, not a
-promise of filesystem free-space recovery. `--porcelain` reports paths,
+promise of filesystem free-space recovery. APFS dry-run does not attempt the
+metadata copy and verification required for replacement; apply can still skip
+an estimated candidate with `metadata-unavailable`. `--porcelain` reports paths,
 reasons, allocation and work counts; see <<REFLINK-PORCELAIN>>. Unsupported
 filesystems and unavailable donors produce skips. The exit status is zero
 when all paths were re-shared or skipped, and nonzero for operational failures.
@@ -441,7 +446,7 @@ linkgit:git-config[1] for more details.
 
 [[REFLINK-PORCELAIN]]
 REFLINK PORCELAIN FORMAT
------------------------
+------------------------
 
 `worktree reflink --porcelain` has a versioned header, one record per index
 entry, and a summary. Fields are `name value` lines; a blank line separates
