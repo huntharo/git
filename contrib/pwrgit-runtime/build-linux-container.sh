@@ -26,4 +26,4 @@ python3 contrib/pwrgit-runtime/verify.py '/out/relocated runtime' --report /out/
 python3 contrib/pwrgit-runtime/smoke.py '/out/relocated runtime' \
   --test-tool /out/build/source/t/helper/test-tool --https --report /out/smoke.json
 cd /out/build/source/t
-for suite in t241[0-6]-*.sh; do ./$suite; done
+for suite in t241[0-7]-*.sh; do ./$suite; done

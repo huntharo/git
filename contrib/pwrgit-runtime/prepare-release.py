@@ -71,11 +71,17 @@ for report in sorted(a.inputs.rglob('*.json')):
     if report.name in ('verify.json', 'smoke.json') or report.name.startswith('sharing-'):
         artifact = report.relative_to(a.inputs).parts[0]
         shutil.copy2(report, a.output / f'{artifact}-{report.name}')
+feature_notes = ''
+if 10 in catalog['source_pull_requests']:
+    feature_notes += 'APFS clone repair batches mode and timestamps in one descriptor operation; the experimental allocation-query replacement is not applied.\n'
+if 11 in catalog['source_pull_requests']:
+    feature_notes += 'APFS re-sharing leaves kernel-managed com.apple.provenance to macOS; all other xattrs, including quarantine, still require exact equality.\n'
 (a.output / 'RELEASE-NOTES.txt').write_text(
     f'Custom Git {catalog["version"]}\n\nExact C source: {catalog["source_revision"]}\n'
     'This is a custom build of the 2.56 development line, not a final upstream 2.56 release.\n'
     'Included source PRs: ' + ', '.join(f'#{n}' for n in catalog['source_pull_requests']) + '.\n'
     'Includes conversion-aware checkout, git worktree reflink, and enabled hard-reset re-sharing.\n'
+    + feature_notes +
     'Runtime config includes /etc/gitconfig and retains the Azure DevOps useHttpPath rule.\n'
     'The runtime does not force checkout.reflink; apps and normal Git configuration control enablement.\n'
     'Existing donor/stat trust remains; this does not acquire PR #1 donor verification.\n'

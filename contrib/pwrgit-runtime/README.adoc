@@ -55,6 +55,18 @@ caller CA override remains the consumer's responsibility. macOS ships no
 CA file and keeps its native trust behavior. Trust-root updates require a
 new checksum-pinned runtime release, not mutation of published assets.
 
+`2.56.0-dev-pwrgit.4` freezes PR #2 + PR #3 + PR #5 + PR #10 + PR #11 at
+`97dd200ae74c18d4afe94deb03bc79f29b9d774d`, under
+`pwrgit-source/2.56.0-dev-pwrgit.4`. PR #10 batches APFS clone mode and
+timestamp repairs into one descriptor operation. Its rejected experimental
+allocation-query replacement remains unapplied. PR #11 allows the value or
+presence of kernel-managed `com.apple.provenance` to differ during APFS
+re-sharing. All remaining xattrs, including quarantine, and existing content,
+metadata, dirty-file and race guards remain required. APFS dry-run does not
+attempt metadata copying, so an apply can still skip an estimated candidate.
+The system-config and Linux CA corrections in `.3` remain in `.4`.
+The isolated contribution branches and earlier immutable releases are retained.
+
 == Fork branches and upstream submissions
 
 `master` tracks upstream Git. `pwrgit` is this fork's default release branch
@@ -121,10 +133,12 @@ Windows is intentionally excluded from this release at the user's request.
 macOS package smoke checks and source suites t2410--t2415 run on the runner's
 ordinary APFS volume. These suites include their own APFS/HFS+ test images;
 their original root avoids nesting those images inside another test image.
-Suite t2416 runs on a private APFS image mounted with `noatime`, verified by
+Suites t2416 and t2417 run on a private APFS image mounted with `noatime`, verified by
 mount flags and an actual read control. This is the controlled condition for
-its strict before/after metadata assertions; the assertions and frozen source
-are unchanged. Cleanup retries busy-volume errors with 15 seconds of total
+their strict before/after metadata assertions. t2417 adds the native allocation
+oracle, clone-repair umask checks and 85 provenance/metadata cases. Its test-only
+interposers contain both CPU slices even when host Python runs natively during
+Rosetta tests. Cleanup retries busy-volume errors with 15 seconds of total
 waiting, and fails while preserving a persistently busy image. The x64 leg
 also retains an ordinary-volume reproduction of already-shared and
 hardlink/sparse cases,
