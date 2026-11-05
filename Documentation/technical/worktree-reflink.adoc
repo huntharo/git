@@ -190,6 +190,43 @@ strict interposer compilation and whitespace checks. The test-list registration
 and porcelain heading underline are corrected so the standard checks include
 `t2417` and accept the worktree documentation.
 
+Authorized existing-worktree control
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+After the scratch tests, the user authorized an actual re-share of one clean,
+inactive existing linked worktree on the M2. It had 3,376 index entries, 3,368
+tracked regular files, and provenance different from the current launcher.
+Both commands ran from the same launcher, without syscall interposition.
+The installed PwrGit Git was `2.56.0-dev-pwrgit.3`; the fixed developer build
+was from PR #11 commit `4c8c44680b25e563e8459eb91a470474877b700c`.
+
+[cols="3,1,2,2",options="header"]
+|===
+|Command |Files re-shared |Private data bytes before |Private data bytes after
+|Installed Git .3 |0 |73,424,896 |73,424,896
+|PR #11 |2,310 |73,424,896 |36,589,568
+|PR #11, second pass |0 |36,589,568 |36,589,568
+|===
+
+The installed binary skipped all 2,310 matching candidates with
+`metadata-unavailable`. The fixed binary made those files fully shared with
+the main checkout, independently confirmed by native private-size and clone-ID
+queries. Private file-data allocation fell by 36,835,328 bytes (35.13 MiB).
+Total allocated data bytes remained 73,424,896; no claim about volume free
+space is made. The remaining 1,058 regular files lacked matching donors;
+eight index entries were ineligible. All commands reported zero failures.
+The second fixed pass attempted zero clones and replaced zero files.
+
+Per-file SHA-256 hashes for every tracked regular file in both source and
+target matched before and after. Target mode, owner/group, flags, link count,
+size, nanosecond birth/access/modification times, ACLs and every other xattr
+matched; only replaced files could change inode, ctime and OS provenance.
+Source copyable metadata also matched apart from access time, which ordinary
+donor reads may advance on this live atime mount. HEADs, logical index entries,
+symlink targets and clean worktree statuses remained unchanged. No temporary
+clone paths remained. Detailed local manifests and command output were kept
+outside the repository; private paths and provenance values are omitted here.
+
 Validation and measurements
 ---------------------------
 
