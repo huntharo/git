@@ -71,9 +71,23 @@ that clone with the opened target, copies target metadata using public
 fcopyfile APIs, verifies ownership/mode/times/xattrs/ACLs, and checks captured
 descriptor/path stats before rename. Special flags and set-ID targets skip.
 Mode, owner, group, mtime, atime, birth time, xattrs and ACLs are preserved when
-verification succeeds. Inode and ctime change. Under the index lock,
+verification succeeds, except for the kernel-managed `com.apple.provenance`
+xattr. As in checkout's xattr cleanup, this attribute is left to macOS rather
+than stripped or forged. Native metadata-copy probes have observed successful
+`fcopyfile(COPYFILE_METADATA)` leaving different provenance on the target and
+new clone. The verifier therefore ignores exactly this name, including its
+presence or absence, while comparing the complete remaining name sets and
+every value byte for byte. Quarantine and similarly prefixed names have no
+exception. This observation does not establish when macOS behavior changed,
+or promise a public interpretation of provenance values.
+
+Inode and ctime change. Under the index lock,
 `update_ce_after_write()` records the replacement's actual stat, with normal
 index writing/racy handling. Failures do not invent old metadata.
+APFS dry-run compares bytes without creating a replacement or testing metadata
+copy. Its eligibility and potential reduction remain estimates; an apply can
+still skip a candidate with `metadata-unavailable` if metadata cannot be copied
+and verified.
 The public interfaces are described by Apple's
 https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/clonefile.2[clonefile(2)]
 and https://github.com/apple-oss-distributions/copyfile/blob/main/copyfile.3[copyfile(3)].
@@ -106,6 +120,112 @@ held the later writes. This evidence is separate from regressions that detect
 ordinary target writes, source writes, source/target path replacement and a
 concurrent edit during the hard-reset repair pass. No private entitlement or
 runtime/application replacement is used.
+
+Provenance regression
+---------------------
+
+Independent native metadata-copy probes on macOS 27.0.1 (26A434, M5 Max) and
+27.2 (26B123, M2 Max) observed this provenance mismatch despite successful
+metadata-copy calls and matching copyable stat fields. A target without
+provenance could also leave provenance present on the new file. This behavior
+therefore predates 27.2; the observations do not establish when it began or
+assign publicly guaranteed meanings to the attribute's bytes. Prior successful
+same-application fixtures did not distinguish these cases.
+
+The M5 control crossed the packaged signed Git .3 and selected ad-hoc Git .3
+as fixture creator and re-share runner under one PwrAgent launcher. All four
+combinations created PwrAgent-provenance files and reduced 131,072 private data
+bytes to zero. These controls support modeling file-creation/responsible-app
+context independently of Git executable signing or the executable's own
+provenance. The read-only foreign-provenance metadata-copy probe still failed
+strict xattr equality while all ordinary xattrs and copyable stat fields
+matched and the existing source's stat remained unchanged. Its scratch content
+was independently generated; no existing source data was cloned or re-shared.
+Responsible-app launch/creation history is implicated, but the controls do not
+reconstruct the actor or scope of historical maintenance. Current shared files
+cannot distinguish sharing at checkout from sharing in a later repair pass.
+
+`t2417` runs `contrib/reflink/apfs-reshare-provenance.py`, a native full-command
+oracle with a test-only Darwin interposer. It models five provenance states:
+different, target-only, clone-only, equal and absent. Each is crossed with
+17 metadata scenarios. These are per-file metadata states, independent of
+executable identity; the equal-provenance controls deliberately pass.
+Positive cases cover both bare files and ordinary
+xattrs (including an empty value), a similarly prefixed attribute, and an ACL.
+Negative cases cover ordinary value/size/name changes, missing and extra
+attributes, quarantine addition/value/removal, name-list/value read errors,
+malformed lists, mode, nanosecond mtime and ACL changes. Faults affect only the
+temporary clone or the verification syscall replies. File data, copyable
+xattrs, ACLs, stat fields and allocation use real disposable APFS files.
+
+The oracle checks exact contents and copyable metadata, actual private data
+allocation, inode replacement only on success, and a metadata-only idempotent
+second pass. The unchanged PR #10 build fails the otherwise-valid different,
+target-only and clone-only provenance cases with `metadata-unavailable`;
+the fixed build passes all 85 cases. Existing `t2416` covers dirty files,
+concurrent writes and path replacements without altering their protections.
+
+This is controlled syscall interposition, not automated launching of two
+responsible applications. It does not attempt to forge real provenance with
+`xattr -w`, strip it, or require a particular real provenance value. Native
+cross-application observations motivate the model; the deterministic regression
+can run without those applications or private worktrees. Reproduce on APFS:
+
+----
+make -j4 DEVELOPER=1 NO_RUST=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease
+python3 contrib/reflink/apfs-reshare-provenance.py --build "$PWD" \
+    --root /tmp/new-reshare-provenance-fixture
+----
+
+Use a nonexistent scratch root. `--provenance different`, `target-only` or
+`clone-only` isolates a pre-fix failure. APFS dry-run remains a byte-comparison
+estimate; it does not promise that a later metadata copy will succeed.
+
+Native M2 validation: `t2410` through `t2417` report 204 passes and seven
+prerequisite skips (211 total), including all 85 oracle scenarios. The full
+`t2413` attributes script passes outside the sandbox, where its fsmonitor
+daemon can run. All 261 unit tests pass, as do the developer build, test lints,
+Meson test-list check, documentation and builtin checks, Python compilation,
+strict interposer compilation and whitespace checks. The test-list registration
+and porcelain heading underline are corrected so the standard checks include
+`t2417` and accept the worktree documentation.
+
+Authorized existing-worktree control
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+After the scratch tests, the user authorized an actual re-share of one clean,
+inactive existing linked worktree on the M2. It had 3,376 index entries, 3,368
+tracked regular files, and provenance different from the current launcher.
+Both commands ran from the same launcher, without syscall interposition.
+The installed PwrGit Git was `2.56.0-dev-pwrgit.3`; the fixed developer build
+was from PR #11 commit `4c8c44680b25e563e8459eb91a470474877b700c`.
+
+[cols="3,1,2,2",options="header"]
+|===
+|Command |Files re-shared |Private data bytes before |Private data bytes after
+|Installed Git .3 |0 |73,424,896 |73,424,896
+|PR #11 |2,310 |73,424,896 |36,589,568
+|PR #11, second pass |0 |36,589,568 |36,589,568
+|===
+
+The installed binary skipped all 2,310 matching candidates with
+`metadata-unavailable`. The fixed binary made those files fully shared with
+the main checkout, independently confirmed by native private-size and clone-ID
+queries. Private file-data allocation fell by 36,835,328 bytes (35.13 MiB).
+Total allocated data bytes remained 73,424,896; no claim about volume free
+space is made. The remaining 1,058 regular files lacked matching donors;
+eight index entries were ineligible. All commands reported zero failures.
+The second fixed pass attempted zero clones and replaced zero files.
+
+Per-file SHA-256 hashes for every tracked regular file in both source and
+target matched before and after. Target mode, owner/group, flags, link count,
+size, nanosecond birth/access/modification times, ACLs and every other xattr
+matched; only replaced files could change inode, ctime and OS provenance.
+Source copyable metadata also matched apart from access time, which ordinary
+donor reads may advance on this live atime mount. HEADs, logical index entries,
+symlink targets and clean worktree statuses remained unchanged. No temporary
+clone paths remained. Detailed local manifests and command output were kept
+outside the repository; private paths and provenance values are omitted here.
 
 Validation and measurements
 ---------------------------
