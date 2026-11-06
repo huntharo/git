@@ -10,6 +10,7 @@ SYNOPSIS
 --------
 [synopsis]
 git worktree add [-f] [--detach] [--checkout] [--lock [--reason <string>]]
+		 [--[no-]reflink] [--reflink-source=<worktree>]
 		 [--orphan] [(-b | -B) <new-branch>] <path> [<commit-ish>]
 git worktree list [-v | --porcelain [-z]]
 git worktree lock [--reason <string>] <worktree>
@@ -212,6 +213,43 @@ To remove a locked worktree, specify `--force` twice.
 	be used to suppress checkout in order to make customizations,
 	such as configuring sparse-checkout. See "Sparse checkout"
 	in linkgit:git-read-tree[1].
+
+`--reflink`::
+`--no-reflink`::
+	With `add`, create files that are unchanged from the reflink source
+	as copy-on-write clones of the reflink source's copies, so that they
+	share disk space until either copy is modified. The new worktree is
+	otherwise exactly what `add` creates without this option: a file is
+	cloned only if the reflink source holds the very blob being checked
+	out, unmodified, and the clone is verified against that blob before
+	it is used; everything else, including every file the reflink source
+	has modified, is written as usual, and untracked and ignored files
+	are never copied. The reflink source is the worktree named by
+	`--reflink-source` or `checkout.reflinkSource`, else the main
+	worktree (or, if that is bare, the worktree `add` is run from).
++
+`--reflink` also records the choice in the new worktree (see
+`worktrees/<id>/reflink-source` in linkgit:gitrepository-layout[5]), so
+that later checkouts in it (`switch`, `reset`, `rebase`, `pull`, ...)
+keep cloning. `--no-reflink` only disables cloning for the initial
+checkout, even if `checkout.reflink` is set. Cloning needs a filesystem
+that supports it (APFS on macOS; btrfs, XFS, bcachefs or overlayfs on
+Linux) with both worktrees on the same filesystem; otherwise, and on
+other platforms including Windows, files are silently written as usual.
+See `checkout.reflink` in linkgit:git-config[1].
+
+`--reflink-source=<worktree>`::
+	With `add`, clone files from _<worktree>_ (a path or a worktree
+	name, as for `git worktree move`), now and for later checkouts in
+	the new worktree. Implies `--reflink`. For example, a long-lived
+	worktree on a maintenance branch makes a good reflink source for
+	worktrees created for work on that branch. Keep a reflink source on
+	its branch: the more its files differ from what a worktree checks
+	out, the less is shared. If the reflink source is moved with `git
+	worktree move`, it stays the reflink source. If it is deleted or
+	pruned, `checkout.reflinkSource` or the main worktree is used
+	instead (and if a later worktree reuses its name, that one). None
+	of this ever affects the content of any file.
 
 `--guess-remote`::
 `--no-guess-remote`::

@@ -189,6 +189,14 @@ void free_stream_filter(struct stream_filter *);
 int is_null_stream_filter(struct stream_filter *);
 
 /*
+ * Would checking out a blob with these attributes write the blob's bytes
+ * unchanged? True unless a filter driver, working-tree-encoding, ident or
+ * LF-to-CRLF output conversion applies. (A text=auto file that checkout
+ * would write with LF endings counts as unchanged.)
+ */
+int convert_to_working_tree_is_noop_ca(const struct conv_attrs *ca);
+
+/*
  * Use as much input up to *isize_p and fill output up to *osize_p;
  * update isize_p and osize_p to indicate how much buffer space was
  * consumed and filled. Return 0 on success, non-zero on error.

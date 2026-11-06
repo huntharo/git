@@ -46,6 +46,41 @@ static struct tr2_counter_metadata tr2_counter_metadata[TRACE2_NUMBER_OF_COUNTER
 		.name = "hardware-flush",
 		.want_per_thread_events = 0,
 	},
+	[TRACE2_COUNTER_ID_REFLINK_CLONED] = {
+		.category = "reflink",
+		.name = "cloned",
+		.want_per_thread_events = 0,
+	},
+	[TRACE2_COUNTER_ID_REFLINK_NO_DONOR] = {
+		.category = "reflink",
+		.name = "no-donor",
+		.want_per_thread_events = 0,
+	},
+	[TRACE2_COUNTER_ID_REFLINK_SOURCE_DIRTY] = {
+		.category = "reflink",
+		.name = "source-dirty",
+		.want_per_thread_events = 0,
+	},
+	[TRACE2_COUNTER_ID_REFLINK_OTHER_FS] = {
+		.category = "reflink",
+		.name = "other-fs",
+		.want_per_thread_events = 0,
+	},
+	[TRACE2_COUNTER_ID_REFLINK_CLONE_FAILED] = {
+		.category = "reflink",
+		.name = "clone-failed",
+		.want_per_thread_events = 0,
+	},
+	[TRACE2_COUNTER_ID_REFLINK_VERIFY_FAILED] = {
+		.category = "reflink",
+		.name = "verify-failed",
+		.want_per_thread_events = 0,
+	},
+	[TRACE2_COUNTER_ID_REFLINK_SCRATCH] = {
+		.category = "reflink",
+		.name = "scratch-donor",
+		.want_per_thread_events = 0,
+	},
 
 	/* Add additional metadata before here. */
 };

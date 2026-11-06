@@ -14,6 +14,7 @@
 #include "progress.h"
 #include "fsmonitor.h"
 #include "entry.h"
+#include "reflink-checkout.h"
 #include "parallel-checkout.h"
 
 static void create_directories(const char *path, int path_len,
@@ -588,6 +589,23 @@ int checkout_entry_ca(struct cache_entry *ce, struct conv_attrs *ca,
 
 	if (!enqueue_checkout(ce, ca, nr_checkouts))
 		return 0;
+
+	if (S_ISREG(ce->ce_mode)) {
+		int fstat_done = 0;
+
+		if (!reflink_checkout_entry(ce, ca, state, path.buf,
+					    &st, &fstat_done)) {
+			if (state->refresh_cache) {
+				if (!fstat_done && lstat(ce->name, &st) < 0)
+					return error_errno("unable to stat just-written file %s",
+							   ce->name);
+				update_ce_after_write(state, ce, &st);
+			}
+			if (nr_checkouts)
+				(*nr_checkouts)++;
+			return 0;
+		}
+	}
 
 	return write_entry(ce, path.buf, ca, state, 0, nr_checkouts);
 }
