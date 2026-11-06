@@ -1,0 +1,171 @@
+Reflink checkout using Git's stat cache
+======================================
+
+Reflink checkout creates regular files by cloning the same path in another
+worktree of the repository. Linux uses FICLONE on supported filesystems;
+macOS uses fclonefileat on APFS. Unsupported or ineligible paths use the
+ordinary checkout writer. The command-line interface, source selection,
+metadata fixups and parallel-checkout integration come from the original
+reflink series (https://github.com/huntharo/git/pull/1).
+
+This alternative removes the unconditional readback and blob hash of every
+clone. It does not replace that readback with unconditional byte comparison.
+Object creation, object reading and Git's existing integrity checks retain
+their normal hash implementations, including collision detection.
+
+Ordinary checkout and unchanged files
+-------------------------------------
+
+`unpack-trees.c` compares entries' modes and object IDs, carries unchanged
+entries forward, and schedules only required updates. Its
+`verify_uptodate_1()` protects local changes using `ie_match_stat()`.
+`oneway_merge()` also uses that check for reset's overwrite behavior.
+
+`checkout_entry_ca()` checks an existing destination with `ie_match_stat()`
+and returns without unlinking it when it is unchanged. The existing checks
+ignore assume-unchanged and skip-worktree when overwriting would otherwise
+lose data. Racy entries take the existing content-check path.
+
+After a write, `update_ce_after_write()` fills the cache entry from the
+actual destination stat data and marks it up to date. The sequential clone
+hook already uses this function; parallel workers return the destination
+stat to the parent, which uses the same function. No donor inode, device,
+ctime, mtime or size is copied into the recipient's index. No fake stat data,
+new cache-entry flag, persistent verification cache or special refresh path
+is needed.
+
+Consequently a clone gets the same new-file metadata as an ordinary write.
+Preserving the donor's old mtime is neither required for Git to skip an
+unchanged destination nor appropriate for build tools. On APFS, the clone
+primitive still resets mode from umask, strips inherited donor xattrs
+(except kernel-managed com.apple.provenance), and resets birthtime, mtime
+and atime. Linux creates a new file with checkout's normal mode and owner
+before cloning data into it. Directory ACL and group inheritance remain
+those of a new file.
+
+Normal refresh, fsmonitor, racy-file checks, index smudging and content
+checks continue to apply to the recipient. In particular a newly created
+file can be racy with its index; cloning does not exempt it from that rule.
+A later no-op command need not write it, even when checking its content is
+necessary. Tests disable reflink for those later commands and check both
+inodes and physical sharing, so a rewrite followed by another clone cannot
+masquerade as preservation.
+
+Choosing a donor
+----------------
+
+The source index is read lazily, once per process, using the original
+READ_INDEX_GENTLY | READ_INDEX_RAW path. This is still needed to treat a
+missing, corrupt or sparse source index as an optimization failure without
+applying the recipient's sparse or fsmonitor state to the other worktree.
+The source index itself is never written.
+
+A donor needs a stage-zero regular entry with the requested blob ID, without
+skip-worktree, intent-to-add or remove flags. Empty files are created
+normally. The source must be on the recipient's filesystem and support the
+clone primitive. Conversion eligibility still uses
+`convert_to_working_tree_is_noop_ca()` in the recipient, so filters,
+working-tree encodings, ident expansion and CRLF output use the normal
+writer. LFS is a filter and follows that path.
+
+A clean source index does not establish that its working-tree bytes equal
+the blob: its attributes or worktree config may differ. The source's
+existing `git check-attr` lookup is therefore queried in its own worktree,
+in one batch per process, for filters and working-tree encoding. Configured
+source clean/smudge/process drivers and source encodings decline cloning.
+An unconfigured filter attribute remains eligible. Fsmonitor is disabled
+for this attribute query; it must not execute a donor's fsmonitor hook.
+The source file's full size must equal the blob size from the object
+metadata; this rejects expanded ident and CRLF donors without reading their
+contents. Lookup errors decline cloning. This source-context lookup is
+conversion eligibility, not a second unchanged-file implementation.
+
+The donor is opened O_RDONLY | O_NOFOLLOW | O_NONBLOCK. Its actual fstat
+must describe a regular file and pass `ie_match_stat()` with:
+
+* CE_MATCH_IGNORE_VALID and CE_MATCH_IGNORE_SKIP_WORKTREE: cached promises
+  about another worktree cannot authorize copying a modified file;
+* CE_MATCH_IGNORE_FSMONITOR: the recipient does not own the donor's monitor;
+* CE_MATCH_RACY_IS_DIRTY: a racy donor takes the ordinary writer instead of
+  adding a new content-read path or invoking comparison on the wrong path.
+
+Only a donor executable-bit difference is ignored: the recipient's index
+mode determines the new file's executable bit. Normal stat differences,
+including ctime when enabled, still disqualify it. If core.checkStat=minimal
+or core.trustCtime=false disables those checks, real donors are declined;
+there is no extra content verification to compensate for that setting.
+
+The clone comes from the open descriptor, so replacing the donor pathname
+with a symlink, directory or FIFO cannot redirect it. After cloning, fstat
+of that same descriptor is checked again with the same index mechanism.
+A visible concurrent edit discards the clone and invokes the ordinary
+writer. The existing `verify-failed` Trace2 counter now counts this stat
+recheck failure, not a failed content hash. Fresh destination metadata is
+then recorded by checkout's unchanged update path.
+
+Limits of the stat model
+------------------------
+
+Matching stat data is not proof of content identity. Git itself can miss a
+same-size edit whose relevant timestamps are preserved, or a write through
+an already-dirtied shared mmap that does not update timestamps. A second
+stat check cannot turn this into a proof. Disabling weaker stat
+configurations and declining racy donors cover useful cases, but do not
+eliminate stat-invisible edits under otherwise normal settings.
+The cache also does not record historical conversion rules: current
+attribute/config eligibility cannot prove how existing donor bytes were
+produced if those rules have since changed.
+
+There is a material difference from ordinary *creation* of a worktree:
+ordinary creation reads the object database and never imports donor edits.
+This alternative can import a stat-invisible donor edit. Subsequent normal
+racy/content checks may report the recipient dirty, but that does not make
+its initial contents equivalent to an ordinary checkout. Neither a new
+mtime nor recording actual destination stat data establishes the blob's
+identity. PR #1's readback hash provided that additional guarantee.
+
+Concurrent edits of the destination remain subject to ordinary Git's
+checkout races. Edits of a separate donor introduce an additional race
+surface. This draft deliberately uses Git's stat trust model and must not
+be described as proving byte-for-byte identity for every possible donor.
+Any deployment decision should account for that difference. Mandatory
+readback would change this tradeoff, rather than being a free correctness
+property of the existing unchanged-file mechanisms.
+
+Feature interactions and fallback
+----------------------------------
+
+Sparse recipients write only selected entries; a sparse source supplies
+only present, eligible regular entries. Split-index source reading remains
+supported. Symlinks and gitlinks use ordinary checkout; submodule commands
+run in their own repositories. No untracked or ignored donor files are
+copied. The source marker continues to name an administrative worktree ID,
+so worktree moves and removal follow the original selection rules.
+
+The hook remains after parallel-checkout enqueueing. Workers perform
+cloning and return the actual destination stat through the existing
+protocol; worker counts, collision detection, progress and fallback are
+unchanged. Unsupported filesystems and platforms, unreadable donors,
+clone errors, unsupported metadata and conversion failures all use the
+ordinary writer. Windows remains disabled as in PR #1.
+
+Testing and measurement
+-----------------------
+
+`t2410` through `t2413` retain the original content, conversion, metadata,
+source-lifecycle, operation and fallback checks. Sharing fixtures explicitly
+make real source mtimes non-racy, then use `git update-index --refresh` to
+validate their bytes and record their real metadata. Racy donors are tested
+separately in `t2414-reflink-stat.sh`, together with no-op inode/extent
+preservation and assume-unchanged donor edits.
+
+GIT_TEST_REFLINK_CHECKOUT=1 continues to exercise cloning with scratch
+copies streamed from the object database when no real donor is eligible.
+The legacy value `corrupt` exercises discard-and-write fallback by forcing
+scratch clone rejection; it no longer claims to test a content verifier.
+GIT_TEST_REFLINK_TAMPER exercises visible concurrent source edits and
+pathname replacement. The test knob never bypasses recipient conversions.
+
+See the measurement report and benchmark script added with this draft for
+build flags, fixture commit, repeated contemporary controls, timing ranges,
+sharing measurements and the explicit concurrent-edit experiment.

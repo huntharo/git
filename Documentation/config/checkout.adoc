@@ -42,3 +42,36 @@ well the parallel version performs.
 	the parallelization gains. This setting allows you to define the minimum
 	number of files for which parallel checkout should be attempted. The
 	default is 100.
+
+`checkout.reflink`::
+	If true, commands that write files to the working tree (checkout,
+	switch, reset, restore, merge, rebase, worktree add, ...) create a
+	file that the worktree's reflink source holds unmodified as a
+	copy-on-write clone of it, so the copies share disk space until one
+	of them is modified. Eligible files must match the source index's
+	normal stat checks, be non-racy, and have an unconverted representation.
+	Clones are not read back or hashed. Racy or dirty donors, or disabled
+	ctime/stat checks, use the ordinary writer. As with Git's normal stat
+	cache, edits invisible to those checks can be missed; such a donor
+	can supply bytes that differ from a checkout from the object database.
+	Files subject to a filter driver, `ident`, `working-tree-encoding`
+	or CRLF conversion on checkout are never cloned. If false, cloning
+	is disabled, even in worktrees created with `git worktree add
+	--reflink` (only that command's own initial checkout still clones).
+	If unset, worktrees created with `--reflink` clone and others do
+	not. A value that is not a boolean disables cloning, with a
+	warning. Cloning is supported on APFS (macOS) and on btrfs, XFS,
+	bcachefs and overlayfs (Linux); elsewhere, across filesystems, and
+	on Windows, files are silently written as usual. See
+	linkgit:git-worktree[1].
+
+`checkout.reflinkSource`::
+	The worktree that `checkout.reflink` clones files from, given as a
+	worktree name or path, as for `git worktree move` (prefer a name or
+	an absolute path: relative paths are relative to the top of each
+	worktree). A worktree created with `git worktree add
+	--reflink-source` uses the worktree given there instead, while it
+	exists. Defaults to the main worktree. A candidate that is missing,
+	bare, or the current worktree itself is skipped in favour of the
+	next one; a reflink source on another filesystem means nothing is
+	cloned.
