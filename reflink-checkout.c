@@ -290,7 +290,8 @@ static int donor_changed(struct index_state *src,
  * Attribute lookup must run in the source worktree's context: its attributes,
  * config.worktree and core.attributesFile need not be ours. Use check-attr's
  * existing lookup, once per process, rather than teaching convert.c about a
- * second worktree. EOL conversions are covered by the blob size check below.
+ * second worktree. EOL conversions are covered by the blob size check or
+ * comparison with the recipient's checkout output below.
  */
 static int read_source_attributes(struct index_state *src)
 {
@@ -382,7 +383,8 @@ out:
  * open on it, or -1.
  */
 static int open_donor(struct repository *r, const struct cache_entry *ce,
-		      struct strbuf *donor, const struct cache_entry **source_ce)
+		      struct strbuf *donor, const struct cache_entry **source_ce,
+		      int compare_output)
 {
 	struct index_state *src = source_index(r);
 	const struct cache_entry *sce;
@@ -440,7 +442,7 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 	if (fstat(fd, &st) || !S_ISREG(st.st_mode) ||
 	    donor_changed(src, sce, &st) ||
 	    odb_read_object_info(r->objects, &ce->oid, &size) != OBJ_BLOB ||
-	    st.st_size < 0 || (uintmax_t)st.st_size != size) {
+	    st.st_size < 0 || (!compare_output && (uintmax_t)st.st_size != size)) {
 		close(fd);
 		goto dirty;
 	}
@@ -450,6 +452,95 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 dirty:
 	count(TRACE2_COUNTER_ID_REFLINK_SOURCE_DIRTY);
 	return -1;
+}
+
+/* Compare only the output whose physical representation the index cannot tell us. */
+static int match_output_chunk(int fd, const char *expected, size_t len)
+{
+	char actual[16384];
+
+	while (len) {
+		size_t n = sizeof(actual) < len ? sizeof(actual) : len;
+		ssize_t got = read_in_full(fd, actual, n);
+
+		if (got > 0)
+			trace2_counter_add(TRACE2_COUNTER_ID_REFLINK_OUTPUT_BYTES, got);
+		if (got < 0 || (size_t)got != n || memcmp(actual, expected, n))
+			return 0;
+		expected += n;
+		len -= n;
+	}
+	return 1;
+}
+
+/*
+ * A clean index records normalized identity, not the checkout representation.
+ * In particular, changing attributes and refreshing can leave a clean LF donor
+ * under eol=crlf. Compare the clone with what the ordinary recipient writer
+ * would produce. Never run an external filter here: it may depend on checkout
+ * metadata, the pathname, or state, and must run exactly in the ordinary writer.
+ *
+ * Explicit EOL conversion streams just as checkout does. Auto conversion needs
+ * the ordinary in-core converter's binary/mixed-EOL detection. No object hash
+ * or index/stat metadata is replaced by this comparison.
+ */
+static int compare_clone_output(struct repository *r, const struct cache_entry *ce,
+				const struct conv_attrs *ca, int fd)
+{
+	struct stream_filter *filter = get_stream_filter_ca(ca, &ce->oid);
+	char extra;
+	int matches = 1;
+
+	if (filter) {
+		struct odb_stream *stream = odb_stream_from_object(r->objects,
+								 &ce->oid, filter);
+		char expected[16384];
+		ssize_t n;
+
+		if (!stream) {
+			free_stream_filter(filter);
+			return 0;
+		}
+		if (stream->type != OBJ_BLOB)
+			matches = 0;
+		while (matches && (n = odb_stream_read(stream, expected,
+						       sizeof(expected))) != 0) {
+			if (n < 0 || !match_output_chunk(fd, expected, n))
+				matches = 0;
+		}
+		if (odb_stream_close(stream))
+			matches = 0;
+	} else {
+		enum object_type type;
+		size_t size;
+		char *blob = odb_read_object(r->objects, &ce->oid, &type, &size);
+		struct strbuf converted = STRBUF_INIT;
+
+		if (!blob || type != OBJ_BLOB) {
+			free(blob);
+			return 0;
+		}
+		if (convert_to_working_tree_ca(ca, ce->name, blob, size,
+					      &converted, NULL))
+			matches = match_output_chunk(fd, converted.buf, converted.len);
+		else
+			matches = match_output_chunk(fd, blob, size);
+		strbuf_release(&converted);
+		free(blob);
+	}
+	return matches && read_in_full(fd, &extra, 1) == 0;
+}
+
+static int clone_matches_output(struct repository *r, const struct cache_entry *ce,
+				const struct conv_attrs *ca, int fd)
+{
+	int matches;
+
+	count(TRACE2_COUNTER_ID_REFLINK_OUTPUT_COMPARED);
+	trace2_region_enter("reflink", "compare-output", r);
+	matches = compare_clone_output(r, ce, ca, fd);
+	trace2_region_leave("reflink", "compare-output", r);
+	return matches;
 }
 
 /*
@@ -538,18 +629,19 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 		state->istate->repo : the_repository;
 	static struct strbuf donor = STRBUF_INIT;
 	const struct cache_entry *source_ce = NULL;
-	int src_fd = -1, fd, scratch = 0;
+	int src_fd = -1, fd, scratch = 0, compare_output;
 
 	if (!rc.initialized)
 		init_reflink(r);
 	if (!rc.enabled || r != rc.repo || !S_ISREG(ce->ce_mode) || !ca ||
-	    !convert_to_working_tree_is_noop_ca(ca))
+	    ca->drv || ca->working_tree_encoding || ca->ident)
 		return -1;
+	compare_output = !convert_to_working_tree_is_noop_ca(ca);
 
 	if (rc.test != REFLINK_TEST_CORRUPT)
-		src_fd = open_donor(r, ce, &donor, &source_ce);
+		src_fd = open_donor(r, ce, &donor, &source_ce, compare_output);
 	if (src_fd < 0) {
-		if (!rc.test)
+		if (!rc.test || compare_output)
 			return -1;
 		src_fd = open_scratch_donor(r, ce);
 		if (src_fd < 0)
@@ -597,7 +689,8 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 	 */
 	if ((!scratch && (fstat(src_fd, st) ||
 			 donor_changed(rc.source_index, source_ce, st))) ||
-	    (scratch && rc.test == REFLINK_TEST_CORRUPT)) {
+	    (scratch && rc.test == REFLINK_TEST_CORRUPT) ||
+	    (compare_output && !clone_matches_output(r, ce, ca, fd))) {
 		count(TRACE2_COUNTER_ID_REFLINK_VERIFY_FAILED);
 		close(src_fd);
 		close(fd);

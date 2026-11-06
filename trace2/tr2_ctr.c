@@ -71,6 +71,14 @@ static struct tr2_counter_metadata tr2_counter_metadata[TRACE2_NUMBER_OF_COUNTER
 		.name = "verify-failed",
 		.want_per_thread_events = 0,
 	},
+	[TRACE2_COUNTER_ID_REFLINK_OUTPUT_COMPARED] = {
+		.category = "reflink",
+		.name = "output-compared",
+	},
+	[TRACE2_COUNTER_ID_REFLINK_OUTPUT_BYTES] = {
+		.category = "reflink",
+		.name = "output-read-bytes",
+	},
 	[TRACE2_COUNTER_ID_REFLINK_SCRATCH] = {
 		.category = "reflink",
 		.name = "scratch-donor",

@@ -2,9 +2,8 @@
 
 test_description='reflink checkout: attributes, filters and other features
 
-Only paths whose conversion to the working tree is a no-op may be
-cloned; everything else (eol=crlf, core.autocrlf, ident,
-working-tree-encoding, filter drivers) is written the ordinary way.
+EOL output must match the recipient conversion. Ident expansion,
+working-tree-encoding and filter drivers use the ordinary writer.
 Sparse checkout, split index, fsmonitor, submodules, symlinks, modes
 and case-insensitive filesystems must all give exactly the result of
 an ordinary checkout.'
@@ -205,7 +204,7 @@ test_expect_success REFLINK 'converted paths are written normally' '
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt convert &&
 	# .gitattributes differs, so it has no donor
-	test_counts trace.json 9 1 0 0 &&
+	test_counts trace.json 9 1 0 1 &&
 	test_all_shared . wt $UNCONVERTED &&
 	test_none_shared . wt $CONVERTED
 '
@@ -233,7 +232,7 @@ test_expect_success REFLINK 'parallel checkout workers honour eligibility' '
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt convert &&
-	test_counts trace.json 9 1 0 0 &&
+	test_counts trace.json 9 1 0 1 &&
 	grep "\"category\":\"reflink\",\"name\":\"cloned\"" trace.json >workers &&
 	test_line_count -gt 1 workers &&
 	test_all_shared . wt $UNCONVERTED &&
@@ -274,7 +273,7 @@ test_expect_success REFLINK 'core.autocrlf=true: only binary files are cloned' '
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt noeol &&
-	test_counts trace.json 1 0 0 0 &&
+	test_counts trace.json 1 1 0 13 &&
 	test_all_shared . wt bin.dat &&
 	test_none_shared . wt plain.txt in/a.txt nodriver.txt &&
 	test_has_crlf wt/plain.txt
