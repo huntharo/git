@@ -42,7 +42,7 @@
 #include "trace.h"
 #include "trace2.h"
 #include "bundle-uri.h"
-#include "tempfile.h"
+#include "quote.h"
 
 #define FORCED_UPDATES_DELAY_WARNING_IN_MS (10 * 1000)
 
@@ -90,6 +90,7 @@ static int verbosity, deepen_relative, set_upstream, refetch;
 static int progress = -1;
 static int tags = TAGS_DEFAULT, update_shallow, deepen;
 static int atomic_fetch;
+static int tag_differences; /* 0: off, 1: existing tags, 2: include remote-only */
 static enum transport_family family;
 static const char *depth;
 static const char *deepen_since;
@@ -1936,47 +1937,55 @@ static void collect_updated_tips(struct oidset *tips, struct ref *ref_map)
 	}
 }
 
-static void write_advertised_refs(struct remote *remote, const struct ref *refs)
+static int parse_tag_differences(const struct option *opt, const char *arg,
+				 int unset)
 {
-	const char *dir = getenv("GIT_ADVERTISED_REFS_DIR");
-	const unsigned char *p;
-	struct strbuf path = STRBUF_INIT;
-	struct strbuf template = STRBUF_INIT;
-	struct tempfile *tempfile = NULL;
-	FILE *fp;
+	int *mode = opt->value;
 
-	if (!dir || !*dir || !remote_is_configured(remote, 0))
+	if (unset)
+		*mode = 0;
+	else if (!arg || !strcmp(arg, "existing"))
+		*mode = 1;
+	else if (!strcmp(arg, "all"))
+		*mode = 2;
+	else
+		return error(_("invalid value for --tag-differences: %s"), arg);
+	return 0;
+}
+
+static void show_tag_differences(struct remote *remote, const struct ref *refs)
+{
+	struct ref_store *store;
+	struct strbuf line = STRBUF_INIT;
+
+	if (!tag_differences || !remote_is_configured(remote, 0))
 		return;
+	store = get_main_ref_store(the_repository);
 
-	/* Hex preserves every byte, even on case-insensitive filesystems. */
-	strbuf_addf(&path, "%s/remote-", dir);
-	for (p = (const unsigned char *)remote->name; *p; p++)
-		strbuf_addf(&path, "%02x", *p);
-	strbuf_addstr(&path, ".refs");
-	strbuf_addf(&template, "%s/.advertised-refs-XXXXXX", dir);
+	for (; refs; refs = refs->next) {
+		struct object_id local_oid;
 
-	tempfile = mks_tempfile(template.buf);
-	if (!tempfile)
-		goto warn;
-	fp = fdopen_tempfile(tempfile, "w");
-	if (!fp)
-		goto warn;
+		if (!starts_with(refs->name, "refs/tags/") ||
+		    ends_with(refs->name, "^{}"))
+			continue;
+		if (refs_read_ref(store, refs->name, &local_oid)) {
+			if (tag_differences != 2)
+				continue;
+			oidclr(&local_oid, the_hash_algo);
+		} else if (oideq(&local_oid, &refs->old_oid)) {
+			continue;
+		}
 
-	/* The transport already represents peeled tags as <name>^{} refs. */
-	for (; refs; refs = refs->next)
-		if (fprintf(fp, "%s\t%s\n", oid_to_hex(&refs->old_oid),
-			    refs->name) < 0)
-			goto warn;
-	if (rename_tempfile(&tempfile, path.buf))
-		goto warn;
-	goto out;
-
-warn:
-	warning_errno(_("could not write advertised refs to '%s'"), path.buf);
-	delete_tempfile(&tempfile);
-out:
-	strbuf_release(&template);
-	strbuf_release(&path);
+		strbuf_reset(&line);
+		strbuf_addstr(&line, "# tag-difference\t");
+		quote_c_style(remote->name, &line, NULL, 0);
+		strbuf_addf(&line, "\t%s\t%s\t%s\n", oid_to_hex(&local_oid),
+			    oid_to_hex(&refs->old_oid), refs->name);
+		strbuf_write(&line, stdout);
+	}
+	/* Preserve the report even if the following pack transfer fails. */
+	fflush(stdout);
+	strbuf_release(&line);
 }
 
 static int do_fetch(struct transport *transport,
@@ -2067,7 +2076,7 @@ static int do_fetch(struct transport *transport,
 		trace2_region_enter("fetch", "remote_refs", the_repository);
 		remote_refs = transport_get_remote_refs(transport,
 							&transport_ls_refs_options);
-		write_advertised_refs(transport->remote, remote_refs);
+		show_tag_differences(transport->remote, remote_refs);
 		trace2_region_leave("fetch", "remote_refs", the_repository);
 	} else
 		remote_refs = NULL;
@@ -2332,6 +2341,9 @@ static void add_options_to_argv(struct strvec *argv,
 		strvec_push(argv, "--no-write-fetch-head");
 	if (config->display_format == DISPLAY_FORMAT_PORCELAIN)
 		strvec_pushf(argv, "--porcelain");
+	if (tag_differences)
+		strvec_pushf(argv, "--tag-differences=%s",
+			     tag_differences == 2 ? "all" : "existing");
 }
 
 /* Fetch multiple remotes in parallel */
@@ -2649,6 +2661,9 @@ int cmd_fetch(int argc,
 		OPT_BOOL(0, "dry-run", &dry_run,
 			 N_("dry run")),
 		OPT_BOOL(0, "porcelain", &porcelain, N_("machine-readable output")),
+		OPT_CALLBACK_F(0, "tag-differences", &tag_differences, N_("mode"),
+			       N_("report differing tags (existing or all)"),
+			       PARSE_OPT_OPTARG, parse_tag_differences),
 		OPT_BOOL(0, "write-fetch-head", &write_fetch_head,
 			 N_("write fetched references to the FETCH_HEAD file")),
 		OPT_BOOL('k', "keep", &keep, N_("keep downloaded pack")),
@@ -2765,7 +2780,7 @@ int cmd_fetch(int argc,
 	}
 
 
-	if (porcelain) {
+	if (porcelain || tag_differences) {
 		switch (recurse_submodules_cli) {
 		case RECURSE_SUBMODULES_OFF:
 		case RECURSE_SUBMODULES_DEFAULT:

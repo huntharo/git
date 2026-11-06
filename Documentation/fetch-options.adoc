@@ -115,6 +115,14 @@ linkgit:git-config[1].
 This is incompatible with `--recurse-submodules=(yes|on-demand)` and takes
 precedence over the `fetch.output` config option.
 
+`--tag-differences[=(existing|all)]`::
+	Report advertised tag object IDs that differ from existing local tags.
+	The default mode is `existing`. With `all`, also report advertised
+	tag names absent locally, using an all-zero local object ID.
+	Implies `--porcelain` for the fetch operation. See OUTPUT in
+	linkgit:git-fetch[1] for the additional record format and streams.
+	No tag is updated merely because it is reported.
+
 `--filter=<filter-spec>`::
 	Use the partial clone feature and request that the server sends
 	a subset of reachable objects according to a given object filter.
