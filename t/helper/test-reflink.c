@@ -83,6 +83,36 @@ static int probe(const char *dir)
 	return ret;
 }
 
+static int dedupe_probe(const char *dir)
+{
+	struct strbuf a = STRBUF_INIT, b = STRBUF_INIT;
+	char data[65536];
+	uintmax_t done;
+	int src = -1, dst = -1, ret = 1;
+
+	memset(data, 'x', sizeof(data));
+	strbuf_addf(&a, "%s/.dedupe-probe-a", dir);
+	strbuf_addf(&b, "%s/.dedupe-probe-b", dir);
+	unlink(a.buf);
+	unlink(b.buf);
+	src = open(a.buf, O_RDWR | O_CREAT | O_EXCL, 0600);
+	dst = open(b.buf, O_RDWR | O_CREAT | O_EXCL, 0600);
+	if (src >= 0 && dst >= 0 &&
+	    write_in_full(src, data, sizeof(data)) == sizeof(data) &&
+	    write_in_full(dst, data, sizeof(data)) == sizeof(data) &&
+	    !dedupe_file_data(src, dst, sizeof(data), &done) && done == sizeof(data))
+		ret = 0;
+	if (src >= 0)
+		close(src);
+	if (dst >= 0)
+		close(dst);
+	unlink(a.buf);
+	unlink(b.buf);
+	strbuf_release(&a);
+	strbuf_release(&b);
+	return ret;
+}
+
 /* Physical location of the first byte of "path", or -1. */
 static long long first_block(const char *path)
 {
@@ -126,77 +156,31 @@ struct usage_totals {
 static int file_usage(const char *path, struct usage_totals *t)
 {
 	struct stat st;
+	struct file_data_usage usage;
+	int fd, ret;
 
 	if (lstat(path, &st) || !S_ISREG(st.st_mode))
 		return 0;
-	t->files++;
-	t->allocated += (uintmax_t)on_disk_bytes(st);
-#if defined(__APPLE__)
-	{
-		struct attrlist al = { 0 };
-		struct {
-			uint32_t len;
-			attribute_set_t returned;
-			off_t private_size;
-		} __attribute__((packed)) buf;
-
-		memset(&buf, 0, sizeof(buf));
-		al.bitmapcount = ATTR_BIT_MAP_COUNT;
-		al.commonattr = ATTR_CMN_RETURNED_ATTRS;
-		al.forkattr = ATTR_CMNEXT_PRIVATESIZE;
-		if (getattrlist(path, &al, &buf, sizeof(buf),
-				FSOPT_ATTR_CMN_EXTENDED | FSOPT_NOFOLLOW))
-			return error_errno("getattrlist(%s)", path);
-		if (!(buf.returned.forkattr & ATTR_CMNEXT_PRIVATESIZE))
-			return error("%s: filesystem does not report private size", path);
-		t->private_bytes += buf.private_size;
-		if (!buf.private_size)
-			t->fully_shared++;
-	}
-#elif defined(__linux__)
-	{
-		int fd = open(path, O_RDONLY);
-		uint64_t start = 0, private_bytes = 0;
-		int last = 0;
-		struct fiemap_hdr *fm;
-
-		if (fd < 0)
-			return error_errno("open(%s)", path);
-		fm = xmalloc(sizeof(*fm) + 64 * sizeof(struct fiemap_ext));
-
-		while (!last) {
-			uint32_t i;
-
-			memset(fm, 0, sizeof(*fm));
-			fm->fm_start = start;
-			fm->fm_length = REFLINK_FIEMAP_MAX_OFFSET - start;
-			fm->fm_flags = REFLINK_FIEMAP_FLAG_SYNC;
-			fm->fm_extent_count = 64;
-			if (ioctl(fd, REFLINK_FS_IOC_FIEMAP, fm)) {
-				free(fm);
-				close(fd);
-				return error_errno("FIEMAP(%s)", path);
-			}
-			if (!fm->fm_mapped_extents)
-				break;
-			for (i = 0; i < fm->fm_mapped_extents; i++) {
-				struct fiemap_ext *e = &fiemap_extents(fm)[i];
-				if (!(e->fe_flags & REFLINK_FIEMAP_EXTENT_SHARED))
-					private_bytes += e->fe_length;
-				start = e->fe_logical + e->fe_length;
-				if (e->fe_flags & REFLINK_FIEMAP_EXTENT_LAST)
-					last = 1;
-			}
-		}
-		free(fm);
-		close(fd);
-		t->private_bytes += private_bytes;
-		if (!private_bytes)
-			t->fully_shared++;
-	}
-#else
-	t->private_bytes += (uintmax_t)on_disk_bytes(st);
+	fd = open(path, O_RDONLY
+#if defined(__APPLE__) || defined(__linux__)
+		  | O_NOFOLLOW | O_NONBLOCK
 #endif
+		 );
+	if (fd < 0)
+		return error_errno("open(%s)", path);
+	ret = get_file_data_usage(fd, &usage);
+	close(fd);
+#if !defined(__APPLE__) && !defined(__linux__)
+	usage.allocated = usage.private_bytes = on_disk_bytes(st);
+	ret = 0;
+#endif
+	if (ret)
+		return error_errno("physical allocation unavailable for %s", path);
+	t->files++;
+	t->allocated += usage.allocated;
+	t->private_bytes += usage.private_bytes;
+	if (!usage.private_bytes)
+		t->fully_shared++;
 	return 0;
 }
 
@@ -250,6 +234,30 @@ static int age_file(const char *path)
 
 int cmd__reflink(int argc, const char **argv)
 {
+	if (argc == 3 && !strcmp(argv[1], "metadata")) {
+		struct stat st;
+		long atime_nsec = 0;
+
+		if (lstat(argv[2], &st))
+			return error_errno("lstat(%s)", argv[2]);
+#if defined(__APPLE__)
+		atime_nsec = st.st_atimespec.tv_nsec;
+		printf("birth %"PRIdMAX" %ld\n",
+		       (intmax_t)st.st_birthtimespec.tv_sec, st.st_birthtimespec.tv_nsec);
+#elif defined(__linux__)
+		atime_nsec = st.st_atim.tv_nsec;
+#endif
+		printf("%"PRIuMAX" %"PRIuMAX" %"PRIuMAX" %o %"PRIuMAX" %"PRIuMAX
+		       " %"PRIdMAX" %"PRIdMAX" %ld %"PRIdMAX" %u %"PRIdMAX" %u\n",
+		       (uintmax_t)st.st_dev, (uintmax_t)st.st_ino, (uintmax_t)st.st_nlink,
+		       (unsigned)st.st_mode, (uintmax_t)st.st_uid, (uintmax_t)st.st_gid,
+		       (intmax_t)st.st_size, (intmax_t)st.st_atime, atime_nsec,
+		       (intmax_t)st.st_mtime, ST_MTIME_NSEC(st),
+		       (intmax_t)st.st_ctime, ST_CTIME_NSEC(st));
+		return 0;
+	}
+	if (argc == 3 && !strcmp(argv[1], "dedupe-probe"))
+		return dedupe_probe(argv[2]);
 	if (argc == 3 && !strcmp(argv[1], "probe"))
 		return probe(argv[2]);
 	if (argc == 3 && !strcmp(argv[1], "age"))
