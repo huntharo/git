@@ -24,9 +24,13 @@ start_mapper () {
 	git show HEAD:plain >plain &&
 	test-tool chmtime -10 plain &&
 	git update-index --refresh &&
+	start_mapping "$1" plain
+}
+
+start_mapping () {
 	mkfifo commands replies &&
 	{
-		test-tool mmap "$1" plain <commands >replies &
+		test-tool mmap "$1" "$2" <commands >replies &
 	} &&
 	mapper_pid=$! &&
 	exec 9>commands &&
@@ -177,6 +181,43 @@ test_expect_success STAT_GEN_COUNT 'preloading the index does not hide mapped wr
 	mapper stat unchanged &&
 	test_must_fail env GIT_TEST_PRELOAD_INDEX=1 git diff --exit-code -- plain >actual &&
 	test_file_not_empty actual
+'
+
+test_expect_success STAT_GEN_COUNT 'prefixed checkout compares mapped destination bytes' '
+	test_when_finished "rm -rf out" &&
+	mkdir out &&
+	git show HEAD:plain >plain &&
+	git show HEAD:plain >out/plain &&
+	test-tool chmtime -10 out/plain &&
+	git --work-tree=out add plain &&
+	start_mapping shared out/plain &&
+	write_script fsmonitor-hook <<-\EOF &&
+	printf "token\0"
+	EOF
+	test_config core.fsmonitor ./fsmonitor-hook &&
+	test_config core.fsmonitorHookVersion 2 &&
+	git update-index --fsmonitor &&
+	git update-index --fsmonitor-valid plain &&
+	git checkout-index --prefix=out/ plain &&
+	mapper "write B" written &&
+	mapper stat unchanged &&
+	test_must_fail git checkout-index --prefix=out/ plain
+'
+
+test_expect_success STAT_GEN_COUNT 'prefixed comparison uses the indexed path for clean filters' '
+	test_when_finished "rm -rf out; rm -f .git/info/attributes" &&
+	mkdir out &&
+	git show HEAD:plain >out/plain &&
+	test-tool chmtime -10 out/plain &&
+	git --work-tree=out add plain &&
+	start_mapping shared out/plain &&
+	write_script clean-filter <<-\EOF &&
+	tr B "\000"
+	EOF
+	test_config filter.mmap.clean ./clean-filter &&
+	printf "%s\n" "plain filter=mmap" "out/plain -filter" >.git/info/attributes &&
+	mapper "write B" written &&
+	git checkout-index --prefix=out/ plain
 '
 
 test_done

@@ -2,6 +2,15 @@
 #include "statinfo.h"
 
 #ifdef HAVE_STAT_GEN_COUNT
+#ifdef NO_MMAP
+/* Exercise native writable mappings even when Git emulates mmap(). */
+#undef mmap
+#undef munmap
+#undef PROT_READ
+#undef PROT_WRITE
+#undef MAP_PRIVATE
+#undef MAP_FAILED
+#endif
 #include <sys/mman.h>
 
 int cmd__mmap(int argc, const char **argv)
