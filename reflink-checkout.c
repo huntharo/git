@@ -1057,6 +1057,13 @@ int reflink_reshare_worktree(struct repository *r,
 			goto done;
 		}
 		index_locked = 1;
+		/*
+		 * A caller such as reset may have published and unlocked an
+		 * earlier index. Read the current one under our new lock before
+		 * recording replacement stats; repo_read_index() alone reuses
+		 * initialized entries and could overwrite another writer's add.
+		 */
+		discard_index(r->index);
 	}
 #endif
 	if (repo_read_index(r) < 0) {

@@ -68,7 +68,11 @@ struct reflink_reshare_options {
 /* Production config/marker enablement, including the explicit false switch. */
 int reflink_checkout_enabled(struct repository *r);
 
-/* Explicit physical optimization; never changes logical bytes or the index. */
+/*
+ * Explicit physical optimization; preserves logical bytes and index entries.
+ * APFS reloads the index under its own lock and records replacement stat data.
+ * Callers must have published any pending index changes before calling.
+ */
 int reflink_reshare_worktree(struct repository *r,
 			     const struct reflink_reshare_options *opts);
 

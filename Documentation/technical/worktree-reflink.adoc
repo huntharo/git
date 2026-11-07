@@ -25,6 +25,13 @@ already uses checkout's clone hook: its internal reset is marked through a
 private child environment variable and does not perform an additional repair
 scan. This avoids charging fresh checkout for the existing-file operation.
 
+APFS repair takes its own index lock and reloads the on-disk index while
+holding it before scanning or recording replacement stat data. Reset has
+already published its index before this transaction; any cooperating writer
+that completed in between is retained. Callers must publish pending index
+changes before requesting repair. Dry-run and in-place Linux scans do not
+write replacement stats and do not acquire this additional write lock.
+
 Eligibility and integrity
 -------------------------
 

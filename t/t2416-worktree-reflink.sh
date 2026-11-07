@@ -487,4 +487,25 @@ test_expect_success RESHARE,SYMLINKS 'tracked symlinks and gitlinks are skipped 
 	test_shared entries-source/plain entries-target/plain
 '
 
+test_expect_success MACOS,RESHARE 'hard-reset repair retains staging completed after reset publishes its index' '
+	test_when_finished remove_target &&
+	private_target &&
+	cc -Wall -Wextra -Werror -dynamiclib \
+		"$TEST_DIRECTORY/lib-reflink-reset-interpose.c" -o reset-interpose.dylib &&
+	echo staged >target/staged &&
+	index=$(git -C target rev-parse --path-format=absolute --git-path index) &&
+	DYLD_INSERT_LIBRARIES="$TRASH_DIRECTORY/reset-interpose.dylib" \
+	GIT_TEST_REFLINK_INDEX="$index" GIT_TEST_REFLINK_GIT="$GIT_BUILD_DIR/git" \
+	"$GIT_BUILD_DIR/git" -C target -c checkout.reflink=true reset -q --hard 2>err &&
+	test_grep "^cooperating git add completed$" err &&
+	git -C target ls-files --stage -- staged >actual.stage &&
+	oid=$(git -C target hash-object staged) &&
+	printf "100644 %s 0\tstaged\n" "$oid" >expect.stage &&
+	test_cmp expect.stage actual.stage &&
+	git -C target status --porcelain -- staged >actual.status &&
+	echo "A  staged" >expect.status &&
+	test_cmp expect.status actual.status &&
+	test_shared source/plain target/plain
+'
+
 test_done
