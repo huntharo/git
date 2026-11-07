@@ -28,6 +28,7 @@
 #include "statinfo.h"
 #include "strbuf.h"
 #include "string-list.h"
+#include "symlinks.h"
 #include "tempfile.h"
 #include "trace2.h"
 #include "worktree.h"
@@ -398,6 +399,20 @@ enum donor_use {
 	DONOR_IN_PLACE,
 };
 
+/*
+ * Like checkout's check_path(), allow the worktree root prefix to resolve
+ * through symlinks, but require real directories below it. Use a fresh cache:
+ * another worktree's leading paths are not maintained by this checkout.
+ * This checks observed paths, not concurrent replacement of parent directories.
+ */
+static int has_worktree_leading_dirs(const char *path, const char *worktree)
+{
+	const char *slash = strrchr(path, '/');
+
+	invalidate_lstat_cache();
+	return slash && has_dirs_only_path(path, slash - path, strlen(worktree));
+}
+
 static int open_donor(struct repository *r, const struct cache_entry *ce,
 		      struct strbuf *donor, const struct cache_entry **source_ce,
 		      enum donor_use use)
@@ -453,6 +468,8 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 
 	strbuf_reset(donor);
 	strbuf_addf(donor, "%s/%s", rc.source_path, ce->name);
+	if (!has_worktree_leading_dirs(donor->buf, rc.source_path))
+		goto dirty;
 	/*
 	 * Skip anything the reflink source's own index would call
 	 * modified. Look at the very file we will clone from, through a
@@ -1111,6 +1128,10 @@ int reflink_reshare_worktree(struct repository *r,
 		}
 		strbuf_reset(&path);
 		strbuf_addf(&path, "%s/%s", r->worktree, ce->name);
+		if (!has_worktree_leading_dirs(path.buf, r->worktree)) {
+			result.reason = "target-unavailable";
+			goto record;
+		}
 		fd = open(path.buf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | noatime);
 		if (fd < 0 || fstat(fd, &before) || !S_ISREG(before.st_mode)) {
 			result.reason = "target-unavailable";
