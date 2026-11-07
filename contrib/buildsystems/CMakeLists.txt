@@ -282,6 +282,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	list(APPEND compat_SOURCES unix-socket.c unix-stream-server.c compat/linux/procinfo.c)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 	list(APPEND compat_SOURCES compat/darwin/procinfo.c)
+	list(APPEND compat_SOURCES compat/darwin/stat.c)
+	add_compile_definitions(HAVE_STAT_GEN_COUNT)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")

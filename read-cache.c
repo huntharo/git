@@ -399,7 +399,7 @@ int ie_match_stat(struct index_state *istate,
 		return 0;
 	if (!ignore_valid && (ce->ce_flags & CE_VALID))
 		return 0;
-	if (!ignore_fsmonitor && (ce->ce_flags & CE_FSMONITOR_VALID))
+	if (!ignore_fsmonitor && ce_fsmonitor_valid(ce))
 		return 0;
 
 	/*
@@ -427,8 +427,13 @@ int ie_match_stat(struct index_state *istate,
 	 * which is not acceptable.  Instead, we check cache entries
 	 * whose mtime are the same as the index file timestamp more
 	 * carefully than others.
+	 *
+	 * Writes through a shared mapping may leave even older timestamps
+	 * unchanged. Such files need the same content check regardless of
+	 * their cached timestamps.
 	 */
-	if (!changed && is_racy_timestamp(istate, ce)) {
+	if (!changed && (is_racy_timestamp(istate, ce) ||
+			 ce_has_unreliable_stat_data(ce, st))) {
 		if (assume_racy_is_modified)
 			changed |= DATA_CHANGED;
 		else
@@ -1381,7 +1386,7 @@ static struct cache_entry *refresh_cache_ent(struct index_state *istate,
 		ce_mark_uptodate(ce);
 		return ce;
 	}
-	if (!ignore_fsmonitor && (ce->ce_flags & CE_FSMONITOR_VALID)) {
+	if (!ignore_fsmonitor && ce_fsmonitor_valid(ce)) {
 		ce_mark_uptodate(ce);
 		return ce;
 	}

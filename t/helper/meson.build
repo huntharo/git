@@ -34,6 +34,7 @@ test_tool_sources = [
   'test-match-trees.c',
   'test-mergesort.c',
   'test-mktemp.c',
+  'test-mmap.c',
   'test-name-hash.c',
   'test-online-cpus.c',
   'test-pack-deltas.c',

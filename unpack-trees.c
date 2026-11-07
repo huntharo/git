@@ -3037,7 +3037,7 @@ int oneway_merge(const struct cache_entry * const *src,
 	if (old && same(old, a)) {
 		int update = 0;
 		if (o->reset && o->update && !ce_uptodate(old) && !ce_skip_worktree(old) &&
-			!(old->ce_flags & CE_FSMONITOR_VALID)) {
+			!ce_fsmonitor_valid(old)) {
 			struct stat st;
 			if (lstat(old->name, &st) ||
 			    ie_match_stat(o->src_index, old, &st, CE_MATCH_IGNORE_VALID|CE_MATCH_IGNORE_SKIP_WORKTREE))
