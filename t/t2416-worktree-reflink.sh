@@ -487,4 +487,84 @@ test_expect_success RESHARE,SYMLINKS 'tracked symlinks and gitlinks are skipped 
 	test_shared entries-source/plain entries-target/plain
 '
 
+test_expect_success MACOS,RESHARE 'hard-reset repair retains staging completed after reset publishes its index' '
+	test_when_finished remove_target &&
+	private_target &&
+	cc -Wall -Wextra -Werror -dynamiclib \
+		"$TEST_DIRECTORY/lib-reflink-reset-interpose.c" -o reset-interpose.dylib &&
+	echo staged >target/staged &&
+	index=$(git -C target rev-parse --path-format=absolute --git-path index) &&
+	DYLD_INSERT_LIBRARIES="$TRASH_DIRECTORY/reset-interpose.dylib" \
+	GIT_TEST_REFLINK_INDEX="$index" GIT_TEST_REFLINK_GIT="$GIT_BUILD_DIR/git" \
+	"$GIT_BUILD_DIR/git" -C target -c checkout.reflink=true reset -q --hard 2>err &&
+	test_grep "^cooperating git add completed$" err &&
+	git -C target ls-files --stage -- staged >actual.stage &&
+	oid=$(git -C target hash-object staged) &&
+	printf "100644 %s 0\tstaged\n" "$oid" >expect.stage &&
+	test_cmp expect.stage actual.stage &&
+	git -C target status --porcelain -- staged >actual.status &&
+	echo "A  staged" >expect.status &&
+	test_cmp expect.status actual.status &&
+	test_shared source/plain target/plain
+'
+
+for side in target source
+do
+	test_expect_success RESHARE,SYMLINKS "re-sharing rejects a symlinked $side parent" '
+		test_when_finished "rm -rf path-source path-target outside-dir" &&
+		git init -q path-source &&
+		git -C path-source config checkout.reflink false &&
+		mkdir path-source/dir &&
+		make_blob_file path-source/dir/file 64 &&
+		git -C path-source add . &&
+		git -C path-source commit -qm nested &&
+		reflink_stable_source path-source &&
+		git -C path-source worktree add -q --detach --no-reflink ../path-target &&
+		reflink_stable_source path-target &&
+		mv path-$side/dir outside-dir &&
+		ln -s ../outside-dir path-$side/dir &&
+		test-tool reflink metadata outside-dir/file >before.stat &&
+		test-tool reflink private-bytes outside-dir/file >before.usage &&
+		git -C path-target worktree reflink --porcelain >out &&
+		test-tool reflink metadata outside-dir/file >after.stat &&
+		test-tool reflink private-bytes outside-dir/file >after.usage &&
+		test_cmp before.stat after.stat &&
+		test_cmp before.usage after.usage &&
+		test_field reshared 0 out &&
+		if test "$side" = target
+		then
+			test_grep "^reason target-unavailable$" out
+		else
+			test_grep "^reason no-donor$" out
+		fi
+	'
+done
+
+for workers in 1 8
+do
+	test_expect_success REFLINK,SYMLINKS "checkout rejects a symlinked donor parent ($workers workers)" '
+		test_when_finished "rm -rf path-source path-target outside-dir" &&
+		git init -q path-source &&
+		git -C path-source config checkout.reflink false &&
+		mkdir path-source/dir &&
+		make_blob_file path-source/dir/file 64 &&
+		git -C path-source add . &&
+		git -C path-source commit -qm nested &&
+		reflink_stable_source path-source &&
+		mv path-source/dir outside-dir &&
+		ln -s ../outside-dir path-source/dir &&
+		test-tool reflink metadata outside-dir/file >before.stat &&
+		test-tool reflink private-bytes outside-dir/file >before.usage &&
+		git -C path-source -c checkout.workers=$workers \
+			-c checkout.thresholdForParallelism=0 worktree add -q --detach \
+			--reflink ../path-target &&
+		test-tool reflink metadata outside-dir/file >after.stat &&
+		test-tool reflink private-bytes outside-dir/file >after.usage &&
+		test_cmp before.stat after.stat &&
+		test_cmp before.usage after.usage &&
+		test_cmp outside-dir/file path-target/dir/file &&
+		test_not_shared outside-dir/file path-target/dir/file
+	'
+done
+
 test_done

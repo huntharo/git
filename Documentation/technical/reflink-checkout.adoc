@@ -8,11 +8,11 @@ ordinary checkout writer. The command-line interface, source selection,
 metadata fixups and parallel-checkout integration come from the original
 reflink series (https://github.com/huntharo/git/pull/1).
 
-This alternative removes the unconditional readback and blob hash of every
-clone. It does not replace that readback with unconditional byte comparison.
-Only candidates requiring CRLF output are compared, as described below.
-Object creation, object reading and Git's existing integrity checks retain
-their normal hash implementations, including collision detection.
+Every cloned snapshot is compared with the recipient's ordinary checkout
+output before it is accepted. Source index/stat checks select candidates;
+they do not prove their physical representation. Object creation, object
+reading and Git's existing integrity checks retain their normal hash
+implementations, including collision detection.
 
 Ordinary checkout and unchanged files
 -------------------------------------
@@ -77,10 +77,12 @@ source clean/smudge/process drivers and source encodings decline cloning.
 An unconfigured filter attribute remains eligible. Fsmonitor is disabled
 for this attribute query; it must not execute a donor's fsmonitor hook.
 The source file's full size must equal the blob size from the object
-metadata on the unconverted fast path; this rejects expanded ident and
-CRLF donors without reading their contents. EOL-output candidates instead
-compare the cloned bytes with the recipient conversion. Lookup errors decline cloning. This source-context lookup is
-conversion eligibility, not a second unchanged-file implementation.
+metadata on the unconverted path. This is only an early rejection: ident
+can expand an existing 40-character ID without changing the size, and
+historical filters can preserve size after their attributes are removed.
+Every clone is therefore compared with the recipient's ordinary output.
+Lookup errors decline cloning. The source-context lookup remains a
+conservative eligibility check, not proof of conversion history.
 
 The donor is opened O_RDONLY | O_NOFOLLOW | O_NONBLOCK. Its actual fstat
 must describe a regular file and pass `ie_match_stat()` with:
@@ -106,8 +108,8 @@ recheck failure or a checkout-output mismatch, not a failed content hash.
 Fresh destination metadata is
 then recorded by checkout's unchanged update path.
 
-EOL output equivalence
-----------------------
+Checkout output equivalence
+---------------------------
 
 The index does not store a file's physical line-ending representation or
 historical conversion context. A committed attributes-only change from
@@ -117,7 +119,7 @@ fresh CRLF checkout. Ordinary reset/restore of an existing clean destination
 can preserve that old representation too. Those operations are not a byte
 oracle for fresh creation. Source and recipient settings may also differ.
 
-For recipient EOL-only CRLF output, the clone is compared with the output
+For raw and EOL-only output, the clone is compared with the output
 of the ordinary recipient converter. `get_stream_filter_ca()` streams
 explicit EOL conversion with bounded buffers. `convert_to_working_tree_ca()`
 handles auto rules in core, including binary detection and mixed endings,
@@ -126,16 +128,15 @@ so a donor change between comparison and cloning cannot invalidate it.
 The normal descriptor stat recheck still applies. A mismatch or read error
 discards the clone and uses the ordinary writer.
 
-Only this ambiguous representation takes a content comparison. No-op
-recipients retain the previous size/stat fast path without readback or
-conversion. The comparison does not implement another clean/refresh cache,
-write the source index, fabricate metadata, replace hashes, or assume that
-matching filter names imply deterministic output. Recipient external and
-process filters (including required/delayed filters), ident and encodings
-remain on the ordinary writer; configured source filters and encodings
-remain conservatively ineligible.
+This comparison also covers no-op recipients: neither current source
+attributes nor size/stat equality establishes historical conversion identity.
+It does not implement another clean/refresh cache, write the source index,
+fabricate metadata, replace hashes, or assume that matching filter names
+imply deterministic output. Recipient external and process filters (including
+required/delayed filters), ident and encodings remain on the ordinary writer;
+configured source filters and encodings remain conservatively ineligible.
 
-For a matched converted candidate, object reading and conversion replace
+For a matched candidate, object reading and any conversion replace
 the same work in the ordinary writer, and one additional clone read avoids
 the file-data write/allocation. Explicit conversions retain streaming;
 auto conversion retains the ordinary converter's in-core memory cost.
@@ -145,36 +146,24 @@ comparison attempts and actual clone bytes read; they do not measure object
 inflation or bytes written by the fallback writer. No speed improvement is
 implied by avoiding writes. See the conversion measurement report.
 
-Limits of the stat model
-------------------------
+Cost and concurrency limits
+---------------------------
 
-Matching stat data is not proof of content identity. Git itself can miss a
-same-size edit whose relevant timestamps are preserved, or a write through
-an already-dirtied shared mmap that does not update timestamps. A second
-stat check cannot turn this into a proof. Disabling weaker stat
-configurations and declining racy donors cover useful cases, but do not
-eliminate stat-invisible edits under otherwise normal settings.
-The cache also does not record historical conversion rules: current
-attribute/config eligibility cannot prove how existing donor bytes were
-produced if those rules have since changed. The EOL-output comparison
-addresses that ambiguity only for candidates on that path; it does not
-strengthen the unconverted fast path to PR #1's verification guarantee.
+A successful raw clone of N bytes now reads N object-output bytes and N
+clone bytes, and compares them in userspace, instead of relying only on
+metadata. The raw stream uses two 16 KiB buffers and O(N) comparison work;
+there is no additional content hash. The ordinary writer already reads the
+object but writes N file-data bytes instead of reading the clone. Compared
+with the former raw-clone path, object inflation and both reads are additional
+work. EOL candidates already paid this comparison cost. A mismatch can stop
+early, then pays the ordinary writer's object read/conversion and write.
 
-There is a material difference from ordinary *creation* of a worktree:
-ordinary creation reads the object database and never imports donor edits.
-This alternative can import a stat-invisible donor edit. Subsequent normal
-racy/content checks may report the recipient dirty, but that does not make
-its initial contents equivalent to an ordinary checkout. Neither a new
-mtime nor recording actual destination stat data establishes the blob's
-identity. PR #1's readback hash provided that additional guarantee.
-
-Concurrent edits of the destination remain subject to ordinary Git's
-checkout races. Edits of a separate donor introduce an additional race
-surface. This draft deliberately uses Git's stat trust model and must not
-be described as proving byte-for-byte identity for every possible donor.
-Any deployment decision should account for that difference. Mandatory
-readback would change this tradeoff, rather than being a free correctness
-property of the existing unchanged-file mechanisms.
+The comparison checks the new snapshot, so historical conversion mismatches
+cannot authorize different checkout bytes. This does not change how status
+or diff detect shared-mapping writes to existing files, and introduces no
+mapping invalidation mechanism. Concurrent destination edits remain subject
+to ordinary checkout's races. The donor descriptor stat recheck remains a
+conservative candidate check, not a substitute for comparing the snapshot.
 
 Feature interactions and fallback
 ----------------------------------

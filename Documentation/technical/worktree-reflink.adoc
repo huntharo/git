@@ -25,6 +25,13 @@ already uses checkout's clone hook: its internal reset is marked through a
 private child environment variable and does not perform an additional repair
 scan. This avoids charging fresh checkout for the existing-file operation.
 
+APFS repair takes its own index lock and reloads the on-disk index while
+holding it before scanning or recording replacement stat data. Reset has
+already published its index before this transaction; any cooperating writer
+that completed in between is retained. Callers must publish pending index
+changes before requesting repair. Dry-run and in-place Linux scans do not
+write replacement stats and do not acquire this additional write lock.
+
 Eligibility and integrity
 -------------------------
 
@@ -32,6 +39,14 @@ Index/stat identity is normalized identity, not proof of checkout bytes.
 Attributes-only EOL changes, `git add` and ordinary refresh can leave a clean
 file holding a historical LF, CRLF or mixed representation. Re-sharing uses
 the target's actual physical representation; it does not reconvert it.
+
+Before opening target or donor files, the scan uses checkout's directory
+checks to reject symlinked or non-directory leading components below each
+worktree root. The root prefix may itself resolve through symlinks, matching
+ordinary checkout. Creation-time donor selection has the same check. These
+pathname checks do not provide descriptor-relative confinement against an
+arbitrary concurrent replacement of a parent directory; the existing file
+replacement concurrency limits still apply.
 
 The scan skips absent/nonregular/sparse/unmerged/intent-to-add entries and
 hardlinked targets. Allocation metadata identifies fully shared files before

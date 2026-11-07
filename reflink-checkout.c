@@ -28,6 +28,7 @@
 #include "statinfo.h"
 #include "strbuf.h"
 #include "string-list.h"
+#include "symlinks.h"
 #include "tempfile.h"
 #include "trace2.h"
 #include "worktree.h"
@@ -398,6 +399,20 @@ enum donor_use {
 	DONOR_IN_PLACE,
 };
 
+/*
+ * Like checkout's check_path(), allow the worktree root prefix to resolve
+ * through symlinks, but require real directories below it. Use a fresh cache:
+ * another worktree's leading paths are not maintained by this checkout.
+ * This checks observed paths, not concurrent replacement of parent directories.
+ */
+static int has_worktree_leading_dirs(const char *path, const char *worktree)
+{
+	const char *slash = strrchr(path, '/');
+
+	invalidate_lstat_cache();
+	return slash && has_dirs_only_path(path, slash - path, strlen(worktree));
+}
+
 static int open_donor(struct repository *r, const struct cache_entry *ce,
 		      struct strbuf *donor, const struct cache_entry **source_ce,
 		      enum donor_use use)
@@ -453,6 +468,8 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 
 	strbuf_reset(donor);
 	strbuf_addf(donor, "%s/%s", rc.source_path, ce->name);
+	if (!has_worktree_leading_dirs(donor->buf, rc.source_path))
+		goto dirty;
 	/*
 	 * Skip anything the reflink source's own index would call
 	 * modified. Look at the very file we will clone from, through a
@@ -479,7 +496,7 @@ dirty:
 	return -1;
 }
 
-/* Compare only the output whose physical representation the index cannot tell us. */
+/* Compare the cloned snapshot, including representations the index cannot tell us. */
 static int match_output_chunk(int fd, const char *expected, size_t len)
 {
 	char actual[16384];
@@ -500,8 +517,9 @@ static int match_output_chunk(int fd, const char *expected, size_t len)
 
 /*
  * A clean index records normalized identity, not the checkout representation.
- * In particular, changing attributes and refreshing can leave a clean LF donor
- * under eol=crlf. Compare the clone with what the ordinary recipient writer
+ * Historical ident expansion or filters can preserve even the raw blob size.
+ * Changing attributes and refreshing can also leave a clean LF donor under
+ * eol=crlf. Compare the clone with what the ordinary recipient writer
  * would produce. Never run an external filter here: it may depend on checkout
  * metadata, the pathname, or state, and must run exactly in the ordinary writer.
  *
@@ -716,7 +734,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 	if ((!scratch && (fstat(src_fd, st) ||
 			 donor_changed(rc.source_index, source_ce, st))) ||
 	    (scratch && rc.test == REFLINK_TEST_CORRUPT) ||
-	    (compare_output && !clone_matches_output(r, ce, ca, fd))) {
+	    !clone_matches_output(r, ce, ca, fd)) {
 		count(TRACE2_COUNTER_ID_REFLINK_VERIFY_FAILED);
 		close(src_fd);
 		close(fd);
@@ -1056,6 +1074,13 @@ int reflink_reshare_worktree(struct repository *r,
 			goto done;
 		}
 		index_locked = 1;
+		/*
+		 * A caller such as reset may have published and unlocked an
+		 * earlier index. Read the current one under our new lock before
+		 * recording replacement stats; repo_read_index() alone reuses
+		 * initialized entries and could overwrite another writer's add.
+		 */
+		discard_index(r->index);
 	}
 #endif
 	if (repo_read_index(r) < 0) {
@@ -1103,6 +1128,10 @@ int reflink_reshare_worktree(struct repository *r,
 		}
 		strbuf_reset(&path);
 		strbuf_addf(&path, "%s/%s", r->worktree, ce->name);
+		if (!has_worktree_leading_dirs(path.buf, r->worktree)) {
+			result.reason = "target-unavailable";
+			goto record;
+		}
 		fd = open(path.buf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | noatime);
 		if (fd < 0 || fstat(fd, &before) || !S_ISREG(before.st_mode)) {
 			result.reason = "target-unavailable";

@@ -1,6 +1,6 @@
 #!/bin/sh
 
-test_description='reflink checkout compares ambiguous EOL output'
+test_description='reflink checkout compares ordinary output'
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-reflink.sh
 
@@ -90,9 +90,12 @@ do
 					test_cmp "$src/$f" "actual/$f" &&
 					test_shared "$src/$f" "actual/$f" || return 1
 				done &&
-				test_reflink_count output-compared 4 trace.json
-			else
+				test_reflink_count output-compared 5 trace.json
+			elif test "$src" = autocrlf
+			then
 				test_reflink_count output-compared 1 trace.json
+			else
+				test_reflink_count output-compared 2 trace.json
 			fi
 		'
 	done
@@ -130,7 +133,7 @@ do
 	test_expect_success REFLINK "LF mismatch is compared and discarded ($workers workers)" '
 		test_when_finished "remove_pair changed" &&
 		checkout_pair changed &&
-		test_reflink_count output-compared 1 trace.json &&
+		test_reflink_count output-compared 2 trace.json &&
 		test_reflink_count verify-failed 1 trace.json
 	'
 
@@ -228,6 +231,83 @@ do
 		'
 	done
 
+done
+
+
+# Materialize conversions with real checkout/index timestamps. The last path's
+# smudge delays the index write, so file and control are genuinely non-racy.
+# core.attributesFile is source-only and never committed into the recipient.
+test_expect_success 'setup same-size ident and historical filter donors' '
+	: >empty-attributes &&
+	for kind in ident filter
+	do
+		src=history-$kind &&
+		git init -q "$src" &&
+		git -C "$src" config checkout.reflink false &&
+		git -C "$src" config extensions.worktreeConfig true &&
+		make_blob_file "$src/control" 64 &&
+		make_blob_file "$src/file" 64 &&
+		printf "\044Id: %040d \044\n" 0 >>"$src/file" &&
+		echo delay >"$src/zzz" &&
+		git -C "$src" add . &&
+		git -C "$src" commit -qm raw &&
+		git -C "$src" config --worktree core.attributesFile \
+			"$TRASH_DIRECTORY/$src.attributes" &&
+		git -C "$src" config --worktree filter.delay.smudge "sleep 2; cat" &&
+		echo "zzz filter=delay" >"$src.attributes" &&
+		if test "$kind" = ident
+		then
+			echo "file ident" >>"$src.attributes"
+		else
+			git -C "$src" config --worktree filter.rot13.clean \
+				"tr A-Za-z N-ZA-Mn-za-m" &&
+			git -C "$src" config --worktree filter.rot13.smudge \
+				"tr A-Za-z N-ZA-Mn-za-m" &&
+			echo "file filter=rot13" >>"$src.attributes"
+		fi &&
+		rm "$src/control" "$src/file" "$src/zzz" &&
+		git -C "$src" checkout-index -fu --all &&
+		git -C "$src" show HEAD:file >raw &&
+		test "$(wc -c <raw)" -eq "$(wc -c <"$src/file")" &&
+		! cmp -s raw "$src/file" || return 1
+	done &&
+	# Remove only the historical filter rule, leaving the donor/index alone.
+	echo "zzz filter=delay" >history-filter.attributes &&
+	git -C history-filter check-attr filter -- file >attr &&
+	echo "file: filter: unspecified" >expect.attr &&
+	test_cmp expect.attr attr
+'
+
+for workers in 1 8
+do
+	for kind in ident filter
+	do
+		test_expect_success REFLINK "same-size $kind donor equals ordinary output ($workers workers)" '
+			src=history-$kind &&
+			test_when_finished "remove_pair $src" &&
+			for wt in expect actual
+			do
+				git -C "$src" worktree add -q --detach --no-checkout \
+					--no-reflink ../$wt &&
+				git -C $wt config --worktree core.attributesFile \
+					"$TRASH_DIRECTORY/empty-attributes" || return 1
+			done &&
+			git -C expect -c checkout.reflink=false reset -q --hard &&
+			GIT_TRACE2_EVENT="$TRACE_JSON" GIT_INTERNAL_WORKTREE_ADD_CHECKOUT=1 \
+			git -C actual -c checkout.reflink=true -c checkout.workers=$workers \
+				-c checkout.thresholdForParallelism=0 reset -q --hard &&
+			test_cmp expect/file actual/file &&
+			describe_tree expect >expect.tree &&
+			describe_tree actual >actual.tree &&
+			test_cmp expect.tree actual.tree &&
+			git -C actual diff-files --quiet &&
+			test_not_shared "$src/file" actual/file &&
+			test_shared "$src/control" actual/control &&
+			test_reflink_count verify-failed 1 trace.json &&
+			test_reflink_count output-compared 2 trace.json &&
+			test_reflink_count cloned 1 trace.json
+		'
+	done
 done
 
 test_done
