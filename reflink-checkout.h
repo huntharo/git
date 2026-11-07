@@ -5,7 +5,7 @@
  * Copy-on-write ("reflink") checkout: when checkout is about to write a
  * regular file, clone it from another worktree of the same repository
  * (the "reflink source") instead, using its index's normal stat trust
- * model to select non-racy donors. EOL output additionally requires comparison
+ * model to select non-racy donors. Every cloned snapshot is compared
  * with the recipient's ordinary checkout output. See the limitations in
  * Documentation/technical/reflink-checkout.adoc.
  */

@@ -13,6 +13,16 @@ test_expect_success 'setup non-racy source' '
 	reflink_stable_source
 '
 
+test_expect_success REFLINK 'raw snapshot comparison reads each cloned byte' '
+	test_when_finished "git worktree remove -f measured" &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" \
+	git worktree add -q --detach --reflink measured &&
+	test_reflink_count output-compared 2 trace.json &&
+	test_reflink_count output-read-bytes 262144 trace.json &&
+	test_shared a measured/a &&
+	test_shared b measured/b
+'
+
 for workers in 1 8
 do
 	test_expect_success REFLINK "no-op operations preserve inodes and extents ($workers workers)" '

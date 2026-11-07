@@ -479,7 +479,7 @@ dirty:
 	return -1;
 }
 
-/* Compare only the output whose physical representation the index cannot tell us. */
+/* Compare the cloned snapshot, including representations the index cannot tell us. */
 static int match_output_chunk(int fd, const char *expected, size_t len)
 {
 	char actual[16384];
@@ -500,8 +500,9 @@ static int match_output_chunk(int fd, const char *expected, size_t len)
 
 /*
  * A clean index records normalized identity, not the checkout representation.
- * In particular, changing attributes and refreshing can leave a clean LF donor
- * under eol=crlf. Compare the clone with what the ordinary recipient writer
+ * Historical ident expansion or filters can preserve even the raw blob size.
+ * Changing attributes and refreshing can also leave a clean LF donor under
+ * eol=crlf. Compare the clone with what the ordinary recipient writer
  * would produce. Never run an external filter here: it may depend on checkout
  * metadata, the pathname, or state, and must run exactly in the ordinary writer.
  *
@@ -716,7 +717,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 	if ((!scratch && (fstat(src_fd, st) ||
 			 donor_changed(rc.source_index, source_ce, st))) ||
 	    (scratch && rc.test == REFLINK_TEST_CORRUPT) ||
-	    (compare_output && !clone_matches_output(r, ce, ca, fd))) {
+	    !clone_matches_output(r, ce, ca, fd)) {
 		count(TRACE2_COUNTER_ID_REFLINK_VERIFY_FAILED);
 		close(src_fd);
 		close(fd);
