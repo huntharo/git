@@ -422,6 +422,8 @@ include shared.mak
 #
 # === Optional library: libintl ===
 #
+# Define NO_REFLINK to disable optional native clone/metadata APIs.
+#
 # Define NO_GETTEXT if you don't want Git output to be translated.
 # A translated Git requires GNU libintl or another gettext implementation,
 # plus libintl-perl at runtime.
@@ -855,6 +857,7 @@ TEST_BUILTINS_OBJS += test-read-cache.o
 TEST_BUILTINS_OBJS += test-read-graph.o
 TEST_BUILTINS_OBJS += test-read-midx.o
 TEST_BUILTINS_OBJS += test-ref-store.o
+TEST_BUILTINS_OBJS += test-reflink.o
 TEST_BUILTINS_OBJS += test-reftable.o
 TEST_BUILTINS_OBJS += test-regex.o
 TEST_BUILTINS_OBJS += test-rot13-filter.o
@@ -1047,11 +1050,20 @@ GIT-SPATCH-DEFINES: FORCE
             fi
 
 include config.mak.uname
+
 -include config.mak.autogen
 -include config.mak
 
 ifdef DEVELOPER
 include config.mak.dev
+endif
+
+# Old Apple SDKs may lack the optional cloning or allocation interfaces.
+ifeq ($(uname_S),Darwin)
+ifndef NO_REFLINK
+NO_REFLINK := $(shell $(CC) $(CPPFLAGS) $(CFLAGS) -fsyntax-only \
+	compat/darwin/reflink-availability.c >/dev/null 2>&1 || echo YesPlease)
+endif
 endif
 
 GENERATED_H += command-list.h
@@ -1271,6 +1283,7 @@ LIB_OBJS += read-cache.o
 LIB_OBJS += rebase-interactive.o
 LIB_OBJS += rebase.o
 LIB_OBJS += ref-filter.o
+LIB_OBJS += compat/reflink.o
 LIB_OBJS += reflog-walk.o
 LIB_OBJS += reflog.o
 LIB_OBJS += refs.o
@@ -1958,6 +1971,10 @@ endif
 ifdef NO_SYMLINK_HEAD
 	BASIC_CFLAGS += -DNO_SYMLINK_HEAD
 endif
+ifdef NO_REFLINK
+	BASIC_CFLAGS += -DNO_REFLINK
+endif
+
 ifdef NO_GETTEXT
 	BASIC_CFLAGS += -DNO_GETTEXT
 	USE_GETTEXT_SCHEME ?= fallthrough
