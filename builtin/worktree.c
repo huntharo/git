@@ -924,8 +924,8 @@ static int add(int ac, const char **av, const char *prefix,
 					       &configured) &&
 		    reflink_source_spec(the_repository, NULL, NULL,
 					&source_spec))
-			warning(_("no reflink source: the main worktree is bare; "
-				  "use --reflink-source=<worktree>"));
+			warning(_("no main reflink source: the main worktree is bare; "
+				  "trying linked worktrees"));
 		free_worktrees(wts);
 	}
 	opts.reflink_source_spec = source_spec.buf;

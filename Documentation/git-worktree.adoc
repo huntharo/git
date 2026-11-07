@@ -265,14 +265,20 @@ To remove a locked worktree, specify `--force` twice.
 	as copy-on-write clones of the reflink source's copies, so that they
 	share disk space until either copy is modified. A donor must have
 	the requested blob in its index and pass Git's normal stat checks;
-	racy or visibly modified files are written as usual. Unconverted clones
-	are not read back or hashed: edits that evade the stat cache can be copied,
-	which differs from creating files from the object database.
-	EOL conversions can share after comparison with ordinary checkout output.
+	racy or visibly modified files are written as usual. Every cloned snapshot
+	is compared with ordinary checkout output before it is accepted, including
+	unconverted files. EOL conversions can share when their physical bytes match.
 	See `checkout.reflink` in linkgit:git-config[1]. Untracked and ignored
 	files are never copied. The reflink source is the worktree named by
 	`--reflink-source` or `checkout.reflinkSource`, else the main
 	worktree (or, if that is bare, the worktree `add` is run from).
++
+With automatic source selection, a failed attempt can try up to four other
+usable linked worktrees in administrative ID order, including donors that
+retain blobs no longer present in the main worktree. Explicit source
+selections remain single-source. Source indexes are cached per checkout
+process, so extra memory and lookup costs grow with their sizes and the
+number of checkout workers.
 +
 `--reflink` also records the choice in the new worktree (see
 `worktrees/<id>/reflink-source` in linkgit:gitrepository-layout[5]), so

@@ -59,7 +59,8 @@ directly. Stat/racy ambiguity uses normal `index_fd()` content verification;
 ambiguous external-filter or working-tree-encoding cases skip conservatively.
 No fabricated stat entries or separate verification cache are introduced.
 
-Source selection reuses the marker/config/main-worktree order and existing
+Source selection reuses the marker/config/main-worktree order, bounded lazy
+automatic alternate search, and existing
 source index OID/stat/racy checks. The in-place/replacement operation needs
 actual existing bytes, so it avoids checkout-only output-conversion and raw
 blob-size gates. Stat-clean filtered/LFS files can share without invoking a
