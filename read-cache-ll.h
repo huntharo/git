@@ -123,6 +123,20 @@ static inline unsigned create_ce_flags(unsigned stage)
 #define ce_mark_uptodate(ce) ((ce)->ce_flags |= CE_UPTODATE)
 #define ce_intent_to_add(ce) ((ce)->ce_flags & CE_INTENT_TO_ADD)
 
+static inline int ce_has_unreliable_stat_data(const struct cache_entry *ce,
+					      const char *path,
+					      const struct stat *st)
+{
+	return S_ISREG(ce->ce_mode) && has_unreliable_stat_data(path, st);
+}
+
+static inline int ce_fsmonitor_valid(const struct cache_entry *ce)
+{
+	/* A mapped store need not produce a filesystem notification. */
+	return (ce->ce_flags & CE_FSMONITOR_VALID) &&
+		!ce_has_unreliable_stat_data(ce, ce->name, NULL);
+}
+
 #define cache_entry_size(len) (offsetof(struct cache_entry,name) + (len) + 1)
 
 #define SOMETHING_CHANGED	(1 << 0) /* unclassified changes go here */
@@ -435,6 +449,8 @@ int is_racy_timestamp(const struct index_state *istate,
 		      const struct cache_entry *ce);
 int has_racy_timestamp(struct index_state *istate);
 int ie_match_stat(struct index_state *, const struct cache_entry *, struct stat *, unsigned int);
+/* Like ie_match_stat(), but check path instead of the indexed filename. */
+int ie_match_stat_path(struct index_state *, const struct cache_entry *, const char *, struct stat *, unsigned int);
 int ie_modified(struct index_state *, const struct cache_entry *, struct stat *, unsigned int);
 
 int match_stat_data_racy(const struct index_state *istate,

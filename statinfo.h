@@ -32,6 +32,21 @@ struct stat_validity {
 	struct stat_data *sd;
 };
 
+/*
+ * Some filesystems cannot keep stat data current while a file is mapped
+ * writable. Return nonzero if the path needs a content comparison. When st
+ * is supplied, a query for a different file must not validate its stat data.
+ */
+#ifdef HAVE_STAT_GEN_COUNT
+int has_unreliable_stat_data(const char *path, const struct stat *st);
+#else
+static inline int has_unreliable_stat_data(const char *path UNUSED,
+					   const struct stat *st UNUSED)
+{
+	return 0;
+}
+#endif
+
 #define MTIME_CHANGED	0x0001
 #define CTIME_CHANGED	0x0002
 #define OWNER_CHANGED	0x0004

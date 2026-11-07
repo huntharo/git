@@ -101,6 +101,18 @@ than the index file.  Therefore, index entries that can be
 racily clean are limited to the ones that have the same
 timestamp as the index file itself.
 
+On macOS, writes through a writable shared mapping can leave both mtime
+and ctime unchanged even when they are older than the index timestamp.
+Git also checks the file's write generation count with `getattrlist(2)`.
+A zero generation count means that the filesystem cannot provide a valid
+content change token, as when a shared mapping can write to the file.
+Git compares the contents in this case, and also when the generation
+query fails or the filesystem does not return the requested attributes.
+An fsmonitor-valid bit cannot bypass this check. Explicit
+assume-unchanged and skip-worktree promises retain their usual meaning.
+As with ordinary writes, this does not provide a snapshot of a file
+that another process modifies while Git is reading it.
+
 The callers that want to check if an index entry matches the
 corresponding file in the working tree continue to call
 `ce_match_stat()`, but with this change, `ce_match_stat()` uses

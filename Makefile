@@ -837,6 +837,7 @@ TEST_BUILTINS_OBJS += test-lazy-init-name-hash.o
 TEST_BUILTINS_OBJS += test-match-trees.o
 TEST_BUILTINS_OBJS += test-mergesort.o
 TEST_BUILTINS_OBJS += test-mktemp.o
+TEST_BUILTINS_OBJS += test-mmap.o
 TEST_BUILTINS_OBJS += test-name-hash.o
 TEST_BUILTINS_OBJS += test-online-cpus.o
 TEST_BUILTINS_OBJS += test-pack-deltas.o
@@ -2349,6 +2350,12 @@ endif
 
 ifndef HAVE_PLATFORM_PROCINFO
 	COMPAT_OBJS += compat/stub/procinfo.o
+endif
+
+# Darwin can use write generation counts to detect unreliable stat data.
+ifdef HAVE_STAT_GEN_COUNT
+	BASIC_CFLAGS += -DHAVE_STAT_GEN_COUNT
+	COMPAT_OBJS += compat/darwin/stat.o
 endif
 
 ifdef RUNTIME_PREFIX
