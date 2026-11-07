@@ -86,4 +86,16 @@ repair pass. Explicit false overrides a worktree's reflink-source marker.
 	exists. Defaults to the main worktree. A candidate that is missing,
 	bare, or the current worktree itself is skipped in favour of the
 	next one; a reflink source on another filesystem means nothing is
-	cloned.
+	cloned when an explicit source is selected.
++
+With automatic source selection, Git first tries the main worktree. After
+a failed attempt it lazily considers up to four other usable worktrees, in
+administrative worktree ID order. This can share old blobs retained by a
+linked worktree after the main worktree changes branches. Each additional
+source index is read at most once per process; parallel checkout workers
+each keep their own source indexes. Search and memory costs therefore grow
+with the number and sizes of these indexes and with checkout workers.
+An explicit source marker, `checkout.reflinkSource`, or `--reflink-source`
+keeps the single-source selection described above, including its existing
+fallback for an unavailable worktree. Specify a source directly to reach a
+donor outside the bounded automatic set.

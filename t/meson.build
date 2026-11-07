@@ -329,6 +329,7 @@ integration_tests = [
   't2415-reflink-conversion.sh',
   't2416-worktree-reflink.sh',
   't2417-apfs-metadata.sh',
+  't2418-reflink-alternate-donors.sh',
   't2500-untracked-overwriting.sh',
   't2501-cwd-empty.sh',
   't3000-ls-files-others.sh',

@@ -61,6 +61,27 @@ missing, corrupt or sparse source index as an optimization failure without
 applying the recipient's sparse or fsmonitor state to the other worktree.
 The source index itself is never written.
 
+Without a nonempty source marker or `checkout.reflinkSource`, main is only
+the preferred source. The first failed attempt lazily enumerates registered
+worktrees again, sorts by administrative ID, and admits at most four usable
+alternates on the recipient's filesystem. No alternate enumeration, index
+read or attribute subprocess runs on a primary hit. The candidate list and
+each gently read raw index are cached for this process; a repeated miss does
+at most four extra index lookups, without rereading indexes or starting more
+attribute processes. Empty blobs and disabled stat/ctime checks do not start
+alternate search. Explicit selections retain their existing single-source
+contract, including marker/config/main fallback for an unavailable worktree.
+
+The bound limits indexes, not their sizes: retained memory is proportional
+to the sum of the admitted index sizes. Each parallel checkout worker has
+its own cache. A matching candidate can require the source-context config
+and attribute queries below, once per source per process. Enumeration costs
+O(W log W) for W registered worktrees; after initialization each path does
+at most five index lookups. A failed clone or unequal snapshot can advance
+the same bounded cursor. A correct index OID alone never authorizes bytes.
+Each opened descriptor retains its own source-index context for later stat
+checks; the index and conversion context of another donor cannot authorize it.
+
 A donor needs a stage-zero regular entry with the requested blob ID, without
 skip-worktree, intent-to-add or remove flags. Empty files are created
 normally. The source must be on the recipient's filesystem and support the

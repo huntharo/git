@@ -144,7 +144,7 @@ test_expect_success REFLINK '--reflink-source=<main worktree> writes "."' '
 	test_same_as_checkout w-main v2
 '
 
-test_expect_success REFLINK 'worktree add --reflink from a linked worktree still defaults to the main worktree' '
+test_expect_success REFLINK 'worktree add --reflink prefers main and falls back to another linked worktree' '
 	test_when_finished "git worktree remove --force w-from-linked" &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
@@ -152,9 +152,11 @@ test_expect_success REFLINK 'worktree add --reflink from a linked worktree still
 			--detach ../w-from-linked maint &&
 	test_source_file w-from-linked "" &&
 	test_reflink_source . trace.json &&
-	test_reflink_count cloned 2 trace.json &&
+	test_reflink_count cloned 5 trace.json &&
 	test_reflink_count no-donor 3 trace.json &&
+	test_reflink_count alternate-index-read 1 trace.json &&
 	test_shared a w-from-linked/a &&
+	test_shared one-oh/b w-from-linked/b &&
 	test_not_shared one-oh/a w-from-linked/a &&
 	test_same_as_checkout w-from-linked maint
 '
@@ -290,7 +292,7 @@ test_expect_success REFLINK 'reflink-source file beats checkout.reflinkSource be
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" git -C w-prec checkout -- a b &&
 	test_reflink_source . trace.json &&
-	test_reflink_count cloned 1 trace.json &&
+	test_reflink_count cloned 2 trace.json &&
 	test_reflink_count no-donor 1 trace.json &&
 	test_same_as_checkout w-prec maint
 '
@@ -307,14 +309,14 @@ test_expect_success 'source precedence does not change the result' '
 	test_same_as_checkout w-prec-any maint
 '
 
-test_expect_success REFLINK 'a maintenance worktree as source shares more than the main worktree' '
+test_expect_success REFLINK 'automatic fallback and explicit maintenance source both share retained blobs' '
 	test_when_finished "git branch -D fix-1 fix-2" &&
 	test_when_finished "git worktree remove --force fix-main" &&
 	test_when_finished "git worktree remove --force fix-oh" &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --reflink -b fix-1 fix-main maint &&
-	test_reflink_count cloned 2 trace.json &&
+	test_reflink_count cloned 5 trace.json &&
 	test_reflink_count no-donor 3 trace.json &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
@@ -327,6 +329,8 @@ test_expect_success REFLINK 'a maintenance worktree as source shares more than t
 	done &&
 	test_not_shared b fix-main/b &&
 	test_not_shared dir/d fix-main/dir/d &&
+	test_shared one-oh/b fix-main/b &&
+	test_shared one-oh/dir/d fix-main/dir/d &&
 
 	# and keeps doing so on later checkouts
 	git -C fix-oh switch -q -c fix-2b v1.0 &&
@@ -758,13 +762,13 @@ test_expect_success 'bare repository: --reflink run from the bare directory warn
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git -C bare.git worktree add -q --reflink --detach ../bw3 maint 2>err &&
-	test_grep "no reflink source" err &&
+	test_grep "no main reflink source" err &&
 	test_line_count = 1 err &&
 	test_source_file bw3 "" &&
-	test_reflink_count cloned 0 trace.json &&
 	if test_have_prereq REFLINK
 	then
-		test_reflink_source "(none)" trace.json
+		test_reflink_source "(none)" trace.json &&
+		test_shared bw1/b bw3/b
 	fi &&
 	(
 		cd bare.git &&
