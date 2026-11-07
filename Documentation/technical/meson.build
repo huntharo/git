@@ -24,6 +24,7 @@ articles = [
   'partial-clone.adoc',
   'platform-support.adoc',
   'racy-git.adoc',
+  'reflink-checkout.adoc',
   'reftable.adoc',
   'remembering-renames.adoc',
   'repository-version.adoc',
