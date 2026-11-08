@@ -2781,6 +2781,10 @@ static int reftable_be_fsck(struct ref_store *ref_store, struct fsck_options *o,
 
 	if (is_main_worktree(wt)) {
 		backend = &refs->main_backend;
+		if (!backend->stack) {
+			ret = error(_("reftable stack for main worktree is broken"));
+			goto out;
+		}
 	} else {
 		ret = backend_for_worktree(&backend, refs, wt->id);
 		if (ret < 0) {

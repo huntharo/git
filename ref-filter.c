@@ -3498,12 +3498,14 @@ void filter_and_format_refs(struct ref_filter *filter, unsigned int type,
 		save_commit_buffer_orig = save_commit_buffer;
 		save_commit_buffer = 0;
 
-		do_filter_refs(filter, type, filter_and_format_one, &ref_cbdata);
+		if (do_filter_refs(filter, type, filter_and_format_one, &ref_cbdata) < 0)
+			die(_("unable to iterate over references"));
 
 		save_commit_buffer = save_commit_buffer_orig;
 	} else {
 		struct ref_array array = { 0 };
-		filter_refs(&array, filter, type);
+		if (filter_refs(&array, filter, type) < 0)
+			die(_("unable to iterate over references"));
 		filter_ahead_behind(the_repository, &array);
 		filter_is_base(the_repository, &array);
 		ref_array_sort(sorting, &array);
