@@ -1,6 +1,6 @@
 #!/bin/sh
 
-test_description='explicit worktree re-sharing'
+test_description='explicit worktree re-sharing and enabled hard-reset recovery'
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-reflink.sh
 
@@ -139,6 +139,36 @@ do
 		test_field native-attempts 0 out &&
 		test_field reshared 0 out &&
 		test "$(summary_field already-shared out)" -ge 2
+	'
+
+	test_expect_success RESHARE "enabled same-HEAD hard reset recovers private storage ($workers workers)" '
+		test_when_finished remove_target &&
+		private_target &&
+		git -C source config checkout.reflink true &&
+		metadata >before.stat &&
+		GIT_TRACE2_EVENT="$TRACE_JSON" git -C target -c checkout.workers=$workers reset -q --hard &&
+		metadata >after.stat &&
+		test_cmp before.stat after.stat &&
+		test_shared source/plain target/plain &&
+		test_shared source/crlf target/crlf &&
+		metadata >before.stat &&
+		rm trace.json &&
+		GIT_TRACE2_EVENT="$TRACE_JSON" git -C target -c checkout.workers=$workers reset -q --hard &&
+		metadata >after.stat &&
+		test_cmp before.stat after.stat &&
+		test_grep "\"key\":\"native-attempts\",\"value\":\"0\"" trace.json
+	'
+
+	test_expect_success "disabled hard reset and soft/mixed reset retain ordinary behavior ($workers workers)" '
+		test_when_finished remove_target &&
+		private_target &&
+		git -C target -c checkout.workers=$workers -c checkout.reflink=false reset -q --hard &&
+		test_not_shared source/plain target/plain &&
+		git -C source config checkout.reflink true &&
+		git -C target -c checkout.workers=$workers reset -q --soft &&
+		git -C target -c checkout.workers=$workers reset -q --mixed &&
+		test_not_shared source/plain target/plain &&
+		test_cmp source/plain target/plain
 	'
 
 	test_expect_success "dirty target remains dirty with identical existing bytes ($workers workers)" '
@@ -371,6 +401,17 @@ test_expect_success RESHARE 'a genuinely racy target uses ordinary verification'
 	test_shared source/plain target/plain
 '
 
+test_expect_success RESHARE 'marker enables hard-reset repair; explicit false overrides it' '
+	test_when_finished remove_target &&
+	private_target &&
+	git -C source config --unset checkout.reflink &&
+	echo . >"$(git -C target rev-parse --absolute-git-dir)/reflink-source" &&
+	git -C target -c checkout.reflink=false reset -q --hard &&
+	test_not_shared source/plain target/plain &&
+	git -C target reset -q --hard &&
+	test_shared source/plain target/plain
+'
+
 test_expect_success RESHARE 'an explicit source overrides a stale configured source without settings changes' '
 	test_when_finished remove_target &&
 	private_target &&
@@ -379,6 +420,30 @@ test_expect_success RESHARE 'an explicit source overrides a stale configured sou
 	git -C source worktree reflink --reflink-source=source --porcelain ../target >out &&
 	test_shared source/plain target/plain &&
 	test "$(git -C source config checkout.reflinkSource)" = missing
+'
+
+test_expect_success RESHARE 'no-op checkout and switch leave private files untouched' '
+	test_when_finished remove_target &&
+	private_target &&
+	git -C source config checkout.reflink true &&
+	git -C target checkout -q --detach HEAD &&
+	git -C target switch -q --detach HEAD &&
+	test_not_shared source/plain target/plain &&
+	git -C target reset -q --hard &&
+	test_shared source/plain target/plain
+'
+
+test_expect_success RESHARE 'hard reset retains a concurrent ordinary edit detected by repair' '
+	test_when_finished remove_target &&
+	private_target &&
+	write_script reset-hook <<-\EOF &&
+	test "$1" = plain || exit 0
+	echo concurrent >>plain
+	EOF
+	GIT_TEST_REFLINK_RESHARE_HOOK=../reset-hook git -C target -c checkout.reflink=true reset -q --hard &&
+	test_grep concurrent target/plain &&
+	git -C target status --porcelain --untracked-files=no >status &&
+	test_grep "M plain$" status
 '
 
 test_expect_success RESHARE 'NUL path records preserve newline names' '
@@ -432,6 +497,27 @@ test_expect_success RESHARE,SYMLINKS 'tracked symlinks and gitlinks are skipped 
 	test -h entries-target/link &&
 	test_path_is_dir entries-target/sub &&
 	test_shared entries-source/plain entries-target/plain
+'
+
+test_expect_success MACOS,RESHARE 'hard-reset repair retains staging completed after reset publishes its index' '
+	test_when_finished remove_target &&
+	private_target &&
+	cc -Wall -Wextra -Werror -dynamiclib \
+		"$TEST_DIRECTORY/lib-reflink/reset-interpose.c" -o reset-interpose.dylib &&
+	echo staged >target/staged &&
+	index=$(git -C target rev-parse --path-format=absolute --git-path index) &&
+	DYLD_INSERT_LIBRARIES="$TRASH_DIRECTORY/reset-interpose.dylib" \
+	GIT_TEST_REFLINK_INDEX="$index" GIT_TEST_REFLINK_GIT="$GIT_BUILD_DIR/git" \
+	"$GIT_BUILD_DIR/git" -C target -c checkout.reflink=true reset -q --hard 2>err &&
+	test_grep "^cooperating git add completed$" err &&
+	git -C target ls-files --stage -- staged >actual.stage &&
+	oid=$(git -C target hash-object staged) &&
+	printf "100644 %s 0\tstaged\n" "$oid" >expect.stage &&
+	test_cmp expect.stage actual.stage &&
+	git -C target status --porcelain -- staged >actual.status &&
+	echo "A  staged" >expect.status &&
+	test_cmp expect.status actual.status &&
+	test_shared source/plain target/plain
 '
 
 for side in target source

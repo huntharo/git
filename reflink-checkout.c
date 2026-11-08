@@ -909,7 +909,12 @@ struct reshare_result {
 	uintmax_t deduplicated;
 };
 
-
+int reflink_checkout_enabled(struct repository *r)
+{
+	if (!rc.initialized)
+		init_reflink(r);
+	return rc.repo == r && rc.enabled && configured_reflink(r);
+}
 
 static int same_file_stat(const struct stat *a, const struct stat *b)
 {
@@ -1417,6 +1422,11 @@ done:
 
 
 #else
+
+int reflink_checkout_enabled(struct repository *r UNUSED)
+{
+	return 0;
+}
 
 int reflink_reshare_worktree(struct repository *r,
 			     const struct reflink_reshare_options *opts)

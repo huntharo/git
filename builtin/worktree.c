@@ -422,6 +422,8 @@ static int checkout_worktree(const struct add_opts *opts,
 	if (opts->quiet)
 		strvec_push(&cp.args, "--quiet");
 	strvec_pushv(&cp.env, child_env->v);
+	/* Creation already used checkout's sharing path; no existing files to repair. */
+	strvec_push(&cp.env, "GIT_INTERNAL_WORKTREE_ADD_CHECKOUT=1");
 	return run_command(&cp);
 }
 

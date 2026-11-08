@@ -475,7 +475,7 @@ The `summary` record contains `scanned`, `eligible`, `already-shared`,
 `stat-clean`, `content-checked`, `content-check-bytes`, `userspace-compared`,
 `comparison-bytes`, `native-attempts`, `native-range-bytes` and
 `clone-attempts`. The same counts are emitted as Trace2 data under
-`reflink-reshare`, for this command.
+`reflink-reshare`, including for the quiet hard-reset pass.
 
 Private allocation is measured using APFS private data size or Linux FIEMAP
 extent flags. It describes file data, not metadata, compression-adjusted

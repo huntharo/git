@@ -60,6 +60,17 @@ Dry-run compares data but does not test APFS metadata copying. Eligibility and
 potential reduction are estimates; apply may still skip metadata it cannot
 preserve. Allocation reduction is not a promise of volume free-space recovery.
 
+Enabled hard reset
+------------------
+
+After a successful explicit hard reset with effective reflink enablement, the
+same scan can recover private allocation in clean files that reset otherwise
+leaves untouched. Initial worktree creation suppresses this second scan because
+it already used checkout creation. Explicit false disables repair; soft/mixed
+reset and no-op checkout do not request it. Operational failures warn without
+failing or undoing the completed reset. The scan and APFS replacement limits
+apply to these otherwise clean files too.
+
 Validation
 ----------
 
