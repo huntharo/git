@@ -28,6 +28,7 @@
 #include "utf8.h"
 #include "worktree.h"
 #include "quote.h"
+#include "setup.h"
 
 #define BUILTIN_WORKTREE_ADD_USAGE \
 	N_("git worktree add [-f] [--detach] [--checkout] [--lock [--reason <string>]]\n" \
@@ -36,6 +37,9 @@
 
 #define BUILTIN_WORKTREE_LIST_USAGE \
 	N_("git worktree list [-v | --porcelain [-z]]")
+#define BUILTIN_WORKTREE_REFLINK_USAGE \
+	N_("git worktree reflink [-n] [-v | --porcelain [-z]]\n" \
+	   "                 [--reflink-source=<worktree>] [<worktree>]")
 #define BUILTIN_WORKTREE_LOCK_USAGE \
 	N_("git worktree lock [--reason <string>] <worktree>")
 #define BUILTIN_WORKTREE_MOVE_USAGE \
@@ -69,6 +73,7 @@
 static const char * const git_worktree_usage[] = {
 	BUILTIN_WORKTREE_ADD_USAGE,
 	BUILTIN_WORKTREE_LIST_USAGE,
+	BUILTIN_WORKTREE_REFLINK_USAGE,
 	BUILTIN_WORKTREE_LOCK_USAGE,
 	BUILTIN_WORKTREE_MOVE_USAGE,
 	BUILTIN_WORKTREE_PRUNE_USAGE,
@@ -85,6 +90,11 @@ static const char * const git_worktree_add_usage[] = {
 
 static const char * const git_worktree_list_usage[] = {
 	BUILTIN_WORKTREE_LIST_USAGE,
+	NULL
+};
+
+static const char * const git_worktree_reflink_usage[] = {
+	BUILTIN_WORKTREE_REFLINK_USAGE,
 	NULL
 };
 
@@ -1579,6 +1589,74 @@ static int repair(int ac, const char **av, const char *prefix,
 	return rc;
 }
 
+static int reflink(int ac, const char **av, const char *prefix,
+		   struct repository *repo)
+{
+	struct reflink_reshare_options opts = { 0 };
+	const char *source = NULL;
+	struct worktree **wts, *target = NULL, *donor = NULL;
+	struct option options[] = {
+		OPT_BOOL('n', "dry-run", &opts.dry_run, N_("report estimates without sharing data")),
+		OPT_BOOL(0, "porcelain", &opts.porcelain, N_("machine-readable output")),
+		OPT_BOOL('z', NULL, &opts.nul_termination, N_("terminate fields with NUL")),
+		OPT__VERBOSE(&opts.verbose, N_("report each path and reason")),
+		OPT_STRING(0, "reflink-source", &source, N_("worktree"),
+			   N_("worktree holding matching physical bytes")),
+		OPT_END()
+	};
+	int ret;
+
+	ac = parse_options(ac, av, prefix, options, git_worktree_reflink_usage, 0);
+	if (ac > 1 || (opts.nul_termination && !opts.porcelain) ||
+	    (opts.verbose && opts.porcelain))
+		usage_with_options(git_worktree_reflink_usage, options);
+	wts = get_worktrees_without_reading_head(repo);
+	if (ac)
+		target = find_worktree(wts, prefix, av[0]);
+	else
+		for (size_t i = 0; wts[i]; i++)
+			if (wts[i]->is_current)
+				target = wts[i];
+	if (!target || target->is_bare)
+		die(_("reflink requires an existing non-bare worktree"));
+	if (source) {
+		donor = find_worktree(wts, prefix, source);
+		if (!donor || donor->is_bare)
+			die(_("unknown reflink source '%s'"), source);
+		if (!fspathcmp(donor->path, target->path))
+			die(_("reflink source and target must differ"));
+		opts.source = donor->path;
+	}
+	if (!target->is_current) {
+		struct child_process cmd = CHILD_PROCESS_INIT;
+		char *gitdir = get_worktree_git_dir(target);
+		char *absolute_gitdir = absolute_pathdup(gitdir);
+
+		cmd.git_cmd = 1;
+		cmd.dir = target->path;
+		prepare_other_repo_env(&cmd.env, absolute_gitdir);
+		free(absolute_gitdir);
+		free(gitdir);
+		strvec_pushl(&cmd.args, "worktree", "reflink", NULL);
+		if (opts.source)
+			strvec_pushf(&cmd.args, "--reflink-source=%s", opts.source);
+		if (opts.dry_run)
+			strvec_push(&cmd.args, "--dry-run");
+		if (opts.porcelain)
+			strvec_push(&cmd.args, "--porcelain");
+		if (opts.nul_termination)
+			strvec_push(&cmd.args, "-z");
+		if (opts.verbose)
+			strvec_push(&cmd.args, "--verbose");
+		ret = run_command(&cmd);
+	} else {
+		setup_work_tree(repo);
+		ret = reflink_reshare_worktree(repo, &opts);
+	}
+	free_worktrees(wts);
+	return ret;
+}
+
 int cmd_worktree(int ac,
 		 const char **av,
 		 const char *prefix,
@@ -1589,6 +1667,7 @@ int cmd_worktree(int ac,
 		OPT_SUBCOMMAND("add", &fn, add),
 		OPT_SUBCOMMAND("prune", &fn, prune),
 		OPT_SUBCOMMAND("list", &fn, list),
+		OPT_SUBCOMMAND("reflink", &fn, reflink),
 		OPT_SUBCOMMAND("lock", &fn, lock_worktree),
 		OPT_SUBCOMMAND("unlock", &fn, unlock_worktree),
 		OPT_SUBCOMMAND("move", &fn, move_worktree),

@@ -80,6 +80,36 @@ static int probe(const char *dir)
 	return ret;
 }
 
+static int dedupe_probe(const char *dir)
+{
+	struct strbuf a = STRBUF_INIT, b = STRBUF_INIT;
+	char data[65536];
+	uintmax_t done;
+	int src = -1, dst = -1, ret = 1;
+
+	memset(data, 'x', sizeof(data));
+	strbuf_addf(&a, "%s/.dedupe-probe-a", dir);
+	strbuf_addf(&b, "%s/.dedupe-probe-b", dir);
+	unlink(a.buf);
+	unlink(b.buf);
+	src = open(a.buf, O_RDWR | O_CREAT | O_EXCL, 0600);
+	dst = open(b.buf, O_RDWR | O_CREAT | O_EXCL, 0600);
+	if (src >= 0 && dst >= 0 &&
+	    write_in_full(src, data, sizeof(data)) == sizeof(data) &&
+	    write_in_full(dst, data, sizeof(data)) == sizeof(data) &&
+	    !dedupe_file_data(src, dst, sizeof(data), &done) && done == sizeof(data))
+		ret = 0;
+	if (src >= 0)
+		close(src);
+	if (dst >= 0)
+		close(dst);
+	unlink(a.buf);
+	unlink(b.buf);
+	strbuf_release(&a);
+	strbuf_release(&b);
+	return ret;
+}
+
 /* Physical location of the first byte of "path", or -1. */
 static long long first_block(const char *path)
 {
@@ -260,6 +290,8 @@ int cmd__reflink(int argc, const char **argv)
 	}
 	if (argc == 2 && !strcmp(argv[1], "supported"))
 		return !reflink_supported();
+	if (argc == 3 && !strcmp(argv[1], "dedupe-probe"))
+		return dedupe_probe(argv[2]);
 	if (argc == 3 && !strcmp(argv[1], "probe"))
 		return probe(argv[2]);
 	if (argc == 3 && !strcmp(argv[1], "age"))

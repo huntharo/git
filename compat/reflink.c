@@ -16,6 +16,8 @@
 #include <sys/clonefile.h>
 #include <sys/mount.h>
 #include <sys/xattr.h>
+#include <sys/acl.h>
+#include <copyfile.h>
 #endif
 
 #if !defined(NO_REFLINK) && (defined(__APPLE__) || defined(__linux__))
@@ -279,6 +281,18 @@ struct git_fiemap_header {
 #define GIT_FIEMAP_INLINE 0x200
 #define GIT_FIEMAP_SHARED 0x2000
 
+struct git_dedupe_range {
+	uint64_t src_offset, src_length;
+	uint16_t dest_count, reserved1;
+	uint32_t reserved2;
+};
+struct git_dedupe_info {
+	int64_t dest_fd;
+	uint64_t dest_offset, bytes_deduped;
+	int32_t status;
+	uint32_t reserved;
+};
+#define GIT_DEDUPE_RANGE _IOWR(0x94, 54, struct git_dedupe_range)
 #endif
 
 int get_file_data_usage(int fd, struct file_data_usage *usage)
@@ -372,6 +386,177 @@ int get_file_data_usage(int fd, struct file_data_usage *usage)
 	return -1;
 #endif
 }
+
+int can_dedupe_file_data(int fd)
+{
+#if !defined(NO_REFLINK) && defined(__linux__)
+	return fs_can_clone(fd);
+#else
+	(void)fd;
+	return 0;
+#endif
+}
+
+int dedupe_file_data(int src_fd, int dst_fd, uintmax_t size, uintmax_t *done)
+{
+	*done = 0;
+#if !defined(NO_REFLINK) && defined(__linux__)
+	if (!can_dedupe_file_data(src_fd) || !can_dedupe_file_data(dst_fd)) {
+		errno = ENOTSUP;
+		return -1;
+	}
+	while (*done < size) {
+		struct {
+			struct git_dedupe_range range;
+			struct git_dedupe_info info;
+		} arg;
+		uintmax_t remaining = size - *done;
+		uintmax_t length = remaining < 16 * 1024 * 1024 ?
+			remaining : 16 * 1024 * 1024;
+
+		memset(&arg, 0, sizeof(arg));
+		arg.range.src_offset = *done;
+		arg.range.src_length = length;
+		arg.range.dest_count = 1;
+		arg.info.dest_fd = dst_fd;
+		arg.info.dest_offset = *done;
+		if (ioctl(src_fd, GIT_DEDUPE_RANGE, &arg))
+			return -1;
+		if (arg.info.status == 1)
+			return 1;
+		if (arg.info.status < 0) {
+			errno = -arg.info.status;
+			return -1;
+		}
+		if (arg.info.status || !arg.info.bytes_deduped ||
+		    arg.info.bytes_deduped > length) {
+			errno = EIO;
+			return -1;
+		}
+		*done += arg.info.bytes_deduped;
+	}
+	return 0;
+#else
+	(void)src_fd;
+	(void)dst_fd;
+	(void)size;
+	errno = ENOTSUP;
+	return -1;
+#endif
+}
+
+#if !defined(NO_REFLINK) && defined(__APPLE__)
+/*
+ * copyfile may ignore individual metadata errors: verify before publishing.
+ * As in strip_xattrs(), leave com.apple.provenance to the kernel.
+ * Metadata copy need not give a new inode the old inode's provenance, so
+ * neither its value nor its presence is part of this equality check.
+ */
+static int same_xattrs(int a, int b)
+{
+	int fds[2] = { a, b };
+	size_t nr[2] = { 0 };
+	char *names = NULL, *av = NULL, *bv = NULL;
+	int equal = 0;
+
+	for (size_t side = 0; side < ARRAY_SIZE(fds); side++) {
+		ssize_t len = flistxattr(fds[side], NULL, 0, 0);
+
+		if (len < 0)
+			goto out;
+		names = xmalloc(len + 1);
+		if (flistxattr(fds[side], names, len, 0) != len)
+			goto out;
+		for (ssize_t i = 0; i < len;) {
+			const char *name = names + i;
+			ssize_t size;
+			size_t n = strnlen(name, len - i);
+
+			if (n == (size_t)(len - i))
+				goto out;
+			i += n + 1;
+			if (!strcmp(name, "com.apple.provenance"))
+				continue;
+			nr[side]++;
+			/* The reverse list only needs to exclude extra names. */
+			if (side)
+				continue;
+			size = fgetxattr(a, name, NULL, 0, 0, 0);
+			if (size < 0 || fgetxattr(b, name, NULL, 0, 0, 0) != size)
+				goto out;
+			av = xmalloc(size + 1);
+			bv = xmalloc(size + 1);
+			if (fgetxattr(a, name, av, size, 0, 0) != size ||
+			    fgetxattr(b, name, bv, size, 0, 0) != size || memcmp(av, bv, size))
+				goto out;
+			FREE_AND_NULL(av);
+			FREE_AND_NULL(bv);
+		}
+		FREE_AND_NULL(names);
+	}
+	/* flistxattr lists each name once; all names from a matched in b. */
+	equal = nr[0] == nr[1];
+out:
+	free(names);
+	free(av);
+	free(bv);
+	return equal;
+}
+
+int preserve_reflink_metadata(int target, int clone, const struct stat *st)
+{
+	struct attrlist al = { .bitmapcount = ATTR_BIT_MAP_COUNT,
+		.commonattr = ATTR_CMN_CRTIME };
+	struct timespec times[2] = { st->st_atimespec, st->st_mtimespec };
+	struct stat actual;
+	acl_t a = NULL, b = NULL;
+	char *at = NULL, *bt = NULL;
+	int ret = -1, aerr, berr;
+
+	if (fcopyfile(target, clone, NULL, COPYFILE_METADATA) ||
+	    fsetattrlist(clone, &al, (void *)&st->st_birthtimespec,
+			 sizeof(st->st_birthtimespec), 0) ||
+	    futimens(clone, times) || fstat(clone, &actual) ||
+	    actual.st_mode != st->st_mode || actual.st_uid != st->st_uid ||
+	    actual.st_gid != st->st_gid || actual.st_flags != st->st_flags ||
+	    actual.st_atimespec.tv_sec != times[0].tv_sec ||
+	    actual.st_atimespec.tv_nsec != times[0].tv_nsec ||
+	    actual.st_mtimespec.tv_sec != times[1].tv_sec ||
+	    actual.st_mtimespec.tv_nsec != times[1].tv_nsec ||
+	    actual.st_birthtimespec.tv_sec != st->st_birthtimespec.tv_sec ||
+	    actual.st_birthtimespec.tv_nsec != st->st_birthtimespec.tv_nsec ||
+	    !same_xattrs(target, clone))
+		goto out;
+	errno = 0;
+	a = acl_get_fd_np(target, ACL_TYPE_EXTENDED);
+	aerr = errno;
+	errno = 0;
+	b = acl_get_fd_np(clone, ACL_TYPE_EXTENDED);
+	berr = errno;
+	if (!a || !b) {
+		if (!a && !b && aerr == ENOENT && berr == ENOENT)
+			ret = 0;
+		goto out;
+	}
+	if (!(at = acl_to_text(a, NULL)) || !(bt = acl_to_text(b, NULL)) ||
+	    strcmp(at, bt))
+		goto out;
+	ret = 0;
+out:
+	acl_free(a);
+	acl_free(b);
+	acl_free(at);
+	acl_free(bt);
+	return ret;
+}
+#else
+int preserve_reflink_metadata(int target UNUSED, int clone UNUSED,
+			     const struct stat *st UNUSED)
+{
+	errno = ENOTSUP;
+	return -1;
+}
+#endif
 
 void prepare_reflink_scratch_donor(int fd)
 {

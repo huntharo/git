@@ -56,4 +56,21 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 int reflink_source_spec(struct repository *r, const char *prefix,
 			const char *arg, struct strbuf *out);
 
+struct reflink_reshare_options {
+	const char *source;
+	int dry_run;
+	int porcelain;
+	int nul_termination;
+	int verbose;
+	int quiet;
+};
+
+/*
+ * Explicit physical optimization; preserves logical bytes and index entries.
+ * APFS reloads the index under its own lock and records replacement stat data.
+ * Callers must have published any pending index changes before calling.
+ */
+int reflink_reshare_worktree(struct repository *r,
+			     const struct reflink_reshare_options *opts);
+
 #endif /* REFLINK_CHECKOUT_H */

@@ -25,6 +25,7 @@ articles = [
   'platform-support.adoc',
   'racy-git.adoc',
   'reflink-checkout.adoc',
+  'worktree-reflink.adoc',
   'reftable.adoc',
   'remembering-renames.adoc',
   'repository-version.adoc',

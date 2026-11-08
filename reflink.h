@@ -35,6 +35,18 @@ struct file_data_usage {
 };
 int get_file_data_usage(int fd, struct file_data_usage *usage);
 
+/*
+ * In-place compare-and-share, preserving the destination inode and contents.
+ * Returns 0 for a complete range, 1 for differing bytes, -1 on error. Even a
+ * partial operation never changes logical bytes. *done counts shared ranges,
+ * not freed storage. Unsupported platforms (including APFS) return ENOTSUP.
+ */
+int can_dedupe_file_data(int fd);
+int dedupe_file_data(int src_fd, int dst_fd, uintmax_t size, uintmax_t *done);
+
+/* Copy and verify replacement metadata; unsupported platforms return -1. */
+int preserve_reflink_metadata(int target, int clone, const struct stat *st);
+
 /* Populate scratch-donor metadata for GIT_TEST_REFLINK_CHECKOUT. */
 void prepare_reflink_scratch_donor(int fd);
 
