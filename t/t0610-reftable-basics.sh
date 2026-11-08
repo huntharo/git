@@ -492,6 +492,51 @@ test_expect_success !CYGWIN 'ref transaction: many concurrent writers' '
 	)
 '
 
+# Concurrent writers racing with a process that compacts the stack must not
+# lose any updates. Writers may fail to acquire locks, but every update that
+# has been reported as successful must be visible afterwards. The stack is
+# prepopulated with many references so that each compaction takes long enough
+# for writers to append new tables while it is running.
+test_expect_success !CYGWIN 'ref transaction: concurrent writers and compaction do not lose updates' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit --no-tag initial &&
+		head=$(git rev-parse HEAD) &&
+		test_seq -f "create refs/heads/seed-%d $head" 10000 >input &&
+		git update-ref --stdin <input &&
+		test_seq -f "refs/heads/seed-%d" 10000 >expect.seed &&
+
+		for w in $(test_seq 4)
+		do
+			{
+				for i in $(test_seq 100)
+				do
+					if git update-ref refs/heads/writer-$w-$i $head 2>/dev/null
+					then
+						echo refs/heads/writer-$w-$i
+					fi || return 1
+				done >acked-$w &&
+				>done-$w &
+			} || return 1
+		done &&
+
+		while test $(ls done-* 2>/dev/null | wc -l) -lt 4
+		do
+			test_might_fail git pack-refs 2>/dev/null || return 1
+		done &&
+		wait &&
+
+		cat expect.seed acked-* | sort >expect &&
+		git for-each-ref --format="%(refname)" >actual.unsorted &&
+		sort actual.unsorted >actual &&
+		comm -23 expect actual >missing &&
+		test_must_be_empty missing &&
+		git refs verify
+	)
+'
+
 test_expect_success 'pack-refs: compacts tables' '
 	test_when_finished "rm -rf repo" &&
 	git init repo &&
