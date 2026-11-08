@@ -87,6 +87,25 @@ test_expect_success 'worktree stacks can be verified' '
 	done
 '
 
+test_expect_success 'main stack with missing table gets reported' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	test_commit -C repo initial &&
+
+	EXISTING_TABLE=$(head -n1 repo/.git/reftable/tables.list) &&
+	rm "repo/.git/reftable/$EXISTING_TABLE" &&
+
+	test_must_fail git -C repo refs verify 2>err &&
+	cat >expect <<-EOF &&
+	error: reftable stack for main worktree is broken
+	EOF
+	test_cmp expect err &&
+
+	test_must_fail git -C repo fsck 2>err &&
+	test_grep "reftable stack for main worktree is broken" err &&
+	test_grep ! "died of signal" err
+'
+
 test_expect_success 'invalid symref gets reported' '
 	test_when_finished "rm -rf repo" &&
 	git init repo &&
