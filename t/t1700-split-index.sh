@@ -17,13 +17,15 @@ sane_unset GIT_TEST_FSMONITOR
 sane_unset GIT_TEST_INDEX_THREADS
 
 # Create a file named as $1 with content read from stdin.
-# Set the file's mtime to a few seconds in the past to avoid racy situations.
+# Backdate mtime to avoid raciness; the layout tests disable ctime checking.
 create_non_racy_file () {
 	cat >"$1" &&
 	test-tool chmtime =-5 "$1"
 }
 
 test_expect_success 'setup' '
+	# The layout fixtures backdate mtime but cannot backdate ctime.
+	git config core.trustctime false &&
 	test_oid_cache <<-EOF
 	own_v3 sha1:8299b0bcd1ac364e5f1d7768efb62fa2da79a339
 	own_v3 sha256:38a6d2925e3eceec33ad7b34cbff4e0086caa0daf28f31e51f5bd94b4a7af86b
@@ -541,6 +543,29 @@ test_expect_success 'GIT_TEST_SPLIT_INDEX works' '
 		GIT_TEST_SPLIT_INDEX=1 git update-index --add file &&
 		ls -l .git/sharedindex.* >actual &&
 		test_line_count = 1 actual
+	)
+'
+
+test_expect_success 'checked ctime can require a split-index replacement' '
+	test_create_repo racy-ctime &&
+	(
+		cd racy-ctime &&
+		git config core.trustctime true &&
+		git config core.useNanosec false &&
+		git config splitIndex.maxPercentChange 100 &&
+		echo content | create_non_racy_file file &&
+		git -c core.trustctime=false update-index --add --split-index file &&
+		test-tool dump-split-index .git/index >actual &&
+		test_grep "^replacements:$" actual &&
+
+		# Make only cached ctime racy, independently of command timing.
+		git ls-files --debug file >stat-data &&
+		ctime=$(sed -n "s/^  ctime: \([0-9]*\):.*/\1/p" stat-data) &&
+		test-tool chmtime "=$ctime" .git/index &&
+		git update-index --force-write-index &&
+		test-tool dump-split-index .git/index >actual &&
+		test_grep "^replacements: 0$" actual &&
+		git diff-files --exit-code
 	)
 '
 
