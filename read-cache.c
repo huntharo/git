@@ -446,7 +446,7 @@ int ie_match_stat_path(struct index_state *istate,
 	 * and delay the return from git-update-index, but that would
 	 * effectively mean we can make at most one commit per second,
 	 * which is not acceptable.  Instead, we check cache entries
-	 * whose mtime (or ctime, when checked) is the same as the index
+	 * whose mtime (or ctime, when checked) is as recent as the index
 	 * file timestamp more carefully than others.
 	 *
 	 * Writes through a shared mapping may leave even older timestamps
@@ -2599,10 +2599,11 @@ static void ce_smudge_racily_clean_entry(struct index_state *istate,
 					 struct cache_entry *ce)
 {
 	/*
-	 * The only thing we care about in this function is to smudge the
-	 * falsely clean entry due to touch-update-touch race, so we leave
-	 * everything else as they are.  We are called for entries whose
-	 * ce_stat_data.sd_mtime match the index file mtime.
+	 * Smudge entries whose stat data matches the working tree despite
+	 * changed contents, leaving other entries alone. We are called for
+	 * entries whose cached mtime, or ctime when checked, is as recent as
+	 * the index file mtime. This covers both the touch-update-touch race
+	 * and completed mapped writes that change only ctime.
 	 *
 	 * Note that this actually does not do much for gitlinks, for
 	 * which ce_match_stat_basic() always goes to the actual
