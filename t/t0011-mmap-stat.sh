@@ -8,7 +8,7 @@ test_lazy_prereq STAT_GEN_COUNT '
 	test_have_prereq MACOS &&
 	test-tool genzeros 16384 >probe &&
 	test-tool mmap unreliable probe >actual &&
-	test "$(cat actual)" = 0
+	test "$(cat actual)" = 1
 '
 
 stop_mapper () {
@@ -62,9 +62,9 @@ test_expect_success STAT_GEN_COUNT 'setup ordinary files with non-racy timestamp
 	git commit -m baseline
 '
 
-test_expect_success STAT_GEN_COUNT 'generation query rejects a different inode' '
+test_expect_success STAT_GEN_COUNT 'experimental comparator distrusts all stat data' '
 	test-tool mmap unreliable plain >actual &&
-	test "$(cat actual)" = 0 &&
+	test "$(cat actual)" = 1 &&
 	test-tool mmap identity plain >actual &&
 	test "$(cat actual)" = 1
 '
