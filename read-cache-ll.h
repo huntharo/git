@@ -434,6 +434,13 @@ int is_racy_timestamp(const struct index_state *istate,
 		      const struct cache_entry *ce);
 int has_racy_timestamp(struct index_state *istate);
 int ie_match_stat(struct index_state *, const struct cache_entry *, struct stat *, unsigned int);
+/*
+ * Like ie_match_stat(), but st describes path and content is read from path.
+ * Conversion attributes still belong to ce->name. Fsmonitor validity only
+ * applies to ce->name.
+ */
+int ie_match_stat_path(struct index_state *, const struct cache_entry *,
+		       const char *path, struct stat *st, unsigned int options);
 int ie_modified(struct index_state *, const struct cache_entry *, struct stat *, unsigned int);
 
 int match_stat_data_racy(const struct index_state *istate,
