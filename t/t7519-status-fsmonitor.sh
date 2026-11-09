@@ -308,9 +308,10 @@ do
 			test_cmp expect actual
 		'
 
-		# Make sure it's actually skipping the check for modified and untracked
-		# (if enabled) files unless it is told about them.
-		test_expect_success "status doesn't detect unreported modifications" '
+		# The experimental macOS comparator always checks tracked content.
+		# Other platforms still trust the hook for tracked paths. The untracked
+		# cache behavior is independent of that generation-signal decision.
+		test_expect_success "status handles unreported modifications with experimental comparator" '
 			test_hook --clobber fsmonitor-test<<-\EOF &&
 			printf "last_update_token\0"
 			:>marker
@@ -322,7 +323,12 @@ do
 			rm -f marker &&
 			git status >actual &&
 			test_path_is_file marker &&
-			test_grep ! "Changes not staged for commit:" actual &&
+			if test_have_prereq MACOS
+			then
+				test_grep "Changes not staged for commit:" actual
+			else
+				test_grep ! "Changes not staged for commit:" actual
+			fi &&
 			if test $uc_val = true
 			then
 				test_grep ! "Untracked files:" actual
