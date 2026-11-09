@@ -12,11 +12,13 @@ test_lazy_prereq STAT_GEN_COUNT '
 '
 
 stop_mapper () {
+	test -n "$mapper_pid" || return 0
 	printf "quit\n" >&9 &&
 	exec 9>&- &&
 	exec 8<&- &&
 	wait "$mapper_pid" &&
-	rm -f commands replies
+	rm -f commands replies &&
+	mapper_pid=
 }
 
 start_mapper () {
@@ -103,6 +105,31 @@ test_expect_success STAT_GEN_COUNT 'diff and status detect mmap writes with unch
 	mapper "write B" written &&
 	mapper stat unchanged &&
 	check_dirty
+'
+
+test_expect_success STAT_GEN_COUNT 'completed mapped writes with racy ctime need a content check' '
+	start_mapper shared &&
+	mapper "write B" written &&
+	stop_mapper &&
+	test-tool mmap unreliable plain >actual &&
+	test "$(cat actual)" = 0 &&
+	test_config core.trustctime true &&
+	test_config core.useNanosec false &&
+	test_config core.checkStat default &&
+	test-tool read-cache --racy-ctime=plain >actual &&
+	echo 32 >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success STAT_GEN_COUNT 'a completed unchanged mapping with racy ctime stays clean' '
+	start_mapper shared &&
+	stop_mapper &&
+	test_config core.trustctime true &&
+	test_config core.useNanosec false &&
+	test_config core.checkStat default &&
+	test-tool read-cache --racy-ctime=plain >actual &&
+	echo 0 >expect &&
+	test_cmp expect actual
 '
 
 test_expect_success STAT_GEN_COUNT 'index refresh does not hide a subsequent mapped write' '

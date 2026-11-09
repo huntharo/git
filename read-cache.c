@@ -354,29 +354,37 @@ static int ce_match_stat_basic(const struct cache_entry *ce, const char *path,
 	return changed;
 }
 
-static int is_racy_stat(const struct index_state *istate,
-			const struct stat_data *sd)
+static int is_racy_time(const struct index_state *istate,
+			const struct cache_time *timestamp)
 {
 	return (istate->timestamp.sec &&
 		/* nanosecond timestamped files can also be racy! */
 		(repo_config_values(istate->repo)->use_nanosec
-		 ? (istate->timestamp.sec < sd->sd_mtime.sec ||
-		    (istate->timestamp.sec == sd->sd_mtime.sec &&
-		     istate->timestamp.nsec <= sd->sd_mtime.nsec))
-		 : istate->timestamp.sec <= sd->sd_mtime.sec));
+		 ? (istate->timestamp.sec < timestamp->sec ||
+		    (istate->timestamp.sec == timestamp->sec &&
+		     istate->timestamp.nsec <= timestamp->nsec))
+		 : istate->timestamp.sec <= timestamp->sec));
 }
 
 int is_racy_timestamp(const struct index_state *istate,
 			     const struct cache_entry *ce)
 {
-	return (!S_ISGITLINK(ce->ce_mode) &&
-		is_racy_stat(istate, &ce->ce_stat_data));
+	struct repo_config_values *cfg;
+	const struct stat_data *sd = &ce->ce_stat_data;
+
+	if (S_ISGITLINK(ce->ce_mode))
+		return 0;
+	cfg = repo_config_values(istate->repo);
+	/* A completed mapped write may update ctime without updating mtime. */
+	return is_racy_time(istate, &sd->sd_mtime) ||
+		(cfg->trust_ctime && cfg->check_stat &&
+		 is_racy_time(istate, &sd->sd_ctime));
 }
 
 int match_stat_data_racy(const struct index_state *istate,
 			 const struct stat_data *sd, struct stat *st)
 {
-	if (is_racy_stat(istate, sd))
+	if (is_racy_time(istate, &sd->sd_mtime))
 		return MTIME_CHANGED;
 	return match_stat_data(sd, st);
 }
@@ -438,8 +446,8 @@ int ie_match_stat_path(struct index_state *istate,
 	 * and delay the return from git-update-index, but that would
 	 * effectively mean we can make at most one commit per second,
 	 * which is not acceptable.  Instead, we check cache entries
-	 * whose mtime are the same as the index file timestamp more
-	 * carefully than others.
+	 * whose mtime (or ctime, when checked) is the same as the index
+	 * file timestamp more carefully than others.
 	 *
 	 * Writes through a shared mapping may leave even older timestamps
 	 * unchanged. Such files need the same content check regardless of

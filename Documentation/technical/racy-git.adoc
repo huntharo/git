@@ -81,7 +81,8 @@ are called "racily clean".
 To avoid this problem, Git does two things:
 
 . When the cached stat information says the file has not been
-  modified, and the `st_mtime` is the same as (or newer than)
+  modified, and the `st_mtime` (or `st_ctime`, when ctime is checked)
+  is the same as (or newer than)
   the timestamp of the index file itself (which is the time `git
   update-index foo` finished running in the above example), it
   also compares the contents with the object registered in the
@@ -101,6 +102,13 @@ than the index file.  Therefore, index entries that can be
 racily clean are limited to the ones that have the same
 timestamp as the index file itself.
 
+A completed write through a shared mapping can update `st_ctime`
+without updating `st_mtime`. Checking the cached ctime against the
+index timestamp also covers this case when a subsequent ctime change
+falls within the timestamp resolution used for stat comparisons.
+This follows the ctime comparison settings: `core.trustctime=false`
+and `core.checkStat=minimal` do not enable ctime-based racy checks.
+
 On macOS, writes through a writable shared mapping can leave both mtime
 and ctime unchanged even when they are older than the index timestamp.
 Git also checks the file's write generation count with `getattrlist(2)`.
@@ -110,6 +118,11 @@ Git compares the contents in this case, and also when the generation
 query fails or the filesystem does not return the requested attributes.
 An fsmonitor-valid bit cannot bypass this check. Explicit
 assume-unchanged and skip-worktree promises retain their usual meaning.
+Once the last mapping is gone, a valid generation count by itself does
+not establish that the file matches the index: Git does not save a
+previous generation count. The ordinary stat and racy checks apply
+again, including their configuration settings and reliance on fsmonitor
+notifications when an entry is marked fsmonitor-valid.
 As with ordinary writes, this does not provide a snapshot of a file
 that another process modifies while Git is reading it.
 
