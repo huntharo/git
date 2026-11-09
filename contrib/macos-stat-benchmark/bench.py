@@ -225,6 +225,11 @@ def main():
                                    index_epoch=len(fixture_info['index_epochs']) - 1,
                                    command=command, mapped_files=len(mapped_paths),
                                    mapped_bytes=sum(p.stat().st_size for p in mapped_paths),
+                                   mapped_paths=sorted(str(p.relative_to(repo)) for p in mapped_paths),
+                                   modified_files=len(expected_paths),
+                                   modified_file_bytes=sum(p.stat().st_size for p in mapped_paths) if modified else 0,
+                                   changed_byte_count=len(expected_paths),
+                                   case_role='nominal expected' if state == 'unmapped' else 'mapped stress case',
                                    expected_paths=expected_paths, samples=[], warmups=[], variants={})
                         # Each block of 3 rotations gives every variant every position.
                         orders = []

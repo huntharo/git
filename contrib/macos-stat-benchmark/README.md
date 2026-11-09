@@ -12,7 +12,8 @@ and does not add a supported Git configuration or benchmark target.
   PR #14's fsmonitor guards, explicit assume-unchanged/skip-worktree opt-outs,
   content/filter route, and other-platform fallback remain in place.
 
-[Measured tables and limitations](results/RESULTS.md), [raw samples](results/results.json),
+[Timing/workload summary](results/SUMMARY.md),
+[measured tables and limitations](results/RESULTS.md), [raw samples](results/results.json),
 [build records](results/builds.json), and [diagnostic counters](results/diagnostics.tsv)
 are versioned with this experiment. Earlier parent-worktree timings are not mixed
 into these results. Binary source SHAs refer to the comparator commit before this
@@ -71,6 +72,27 @@ encoded in `build.sh`; the build logs are preserved. The baseline `GIT-CFLAGS`
 file was unavailable at metadata capture (recorded as null), but its exact make
 command, compiler, executable build options/hash and full build log are retained.
 The selective and comparator records also preserve expanded `GIT-CFLAGS`.
+
+**Unmapped is the nominal expected case** in the tables. Mapped cases deliberately
+exercise the conservative content-comparison path. Each timing row also has a
+workload row showing modified file count/size, unique file counts/sizes selected
+for validation, and measured content-request totals separately for Selective and
+Always. [workloads.tsv](results/workloads.tsv) preserves exact byte sums and the
+separate read/pread/mmap counters. The original raw measurements remain unchanged;
+these workload tables are derived by joining their fixture/mapping metadata and
+their existing separate diagnostic counters. Future harness rows additionally
+record explicit mapped paths, modified counts/file sizes, and case role.
+
+Unique sizes come from the controlled mapped set for Selective and all fixture
+files for Always. They do not include repeated comparisons. Total requests add
+returned read/pread bytes and successful requested mmap lengths, including repeats;
+**mmap lengths do not establish bytes touched/hashed or physical I/O**. Ten-large
+“many unchanged” and “many modified” use the same ten 100 MiB paths. Unchanged has
+zero modified files and 1,000 MiB of requests per variant. Modified changes byte
+zero of all ten, and status requests 3,000 MiB per variant through repeated content
+comparisons. The unique file size is still 1,000 MiB, and both variants take the
+same content path, explaining the close times. Diff requests 4,000 MiB in that
+modified case; the additional mapping extent need not be fully touched.
 
 The default profile is small (`smoke`); full-size data requires `--profile full`.
 Fixture knobs: `--fixtures small one-large ten-large mixed` selects a subset;

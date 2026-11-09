@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Independent structural/correctness audit of completed benchmark artifacts."""
 import hashlib
+import csv
 import json
 from pathlib import Path
 import sys
@@ -43,6 +44,33 @@ for fixture in data['fixtures']:
     assert all(fixture['generation_before_mapping'])
 assert all(d['getattrlist_calls'] == 0 for d in data['diagnostics'] if d['label'] in ['baseline', 'always'])
 assert all(d['getattrlist_calls'] > 0 for d in data['diagnostics'] if d['label'] == 'selective')
+with (root / 'workloads.tsv').open(newline='') as stream:
+    workload_rows = list(csv.DictReader(stream, delimiter='\t'))
+assert len(workload_rows) == len(data['rows'])
+for work, row in zip(workload_rows, data['rows']):
+    assert all(work[k] == row[k] for k in ['fixture', 'state', 'fsmonitor', 'command'])
+    fixture = next(f for f in data['fixtures'] if f['name'] == row['fixture'])
+    assert work['case_role'] == ('nominal expected' if row['state'] == 'unmapped' else 'mapped stress case')
+    assert int(work['mapped_files']) == row['mapped_files']
+    assert int(work['mapped_bytes']) == row['mapped_bytes']
+    assert int(work['modified_files']) == len(row['expected_paths'])
+    assert int(work['modified_file_bytes']) == (row['mapped_bytes'] if row['expected_paths'] else 0)
+    for label in ['selective', 'always']:
+        assert int(work[label + '_unique_files']) == (row['mapped_files'] if label == 'selective' else fixture['files'])
+        unique_bytes = row['mapped_bytes'] if label == 'selective' else fixture['bytes']
+        assert int(work[label + '_unique_file_bytes']) == unique_bytes
+        counter = next(d for d in data['diagnostics'] if d['label'] == label
+                       and all(d[k] == row[k] for k in ['fixture', 'state', 'fsmonitor', 'command']))
+        fields = ['read_bytes', 'pread_bytes', 'mmap_requested_bytes']
+        for field in fields:
+            assert int(work[label + '_' + field]) == counter[field]
+        total = sum(counter[field] for field in fields)
+        assert int(work[label + '_total_content_request_bytes']) == total
+        # The diagnostic extents include repeated comparisons; mmap lengths
+        # do not establish how many bytes were actually touched or hashed.
+        passes = (3 if row['command'] == 'status' else 4) if row['expected_paths'] else 1
+        expected = row['mapped_bytes'] * passes if label == 'selective' else fixture['bytes'] + (passes - 1) * row['mapped_bytes']
+        assert total == expected
 assert (root / 'focused-adapted.log').read_text().rstrip().endswith('Result: PASS')
 assert (root / 'focused-original.log').read_text().rstrip().endswith('Result: FAIL')
 proof = [json.loads(line) for line in (root / 'combined-proof.jsonl').read_text().splitlines()]
@@ -70,6 +98,7 @@ manifest = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in root.iterdir() if p.is_file() and p.name != 'audit.json'}
 output = dict(passed=True, rows=72, measured_samples=samples,
               incorrect_baseline_samples=incorrect, diagnostics=216,
+              workload_rows=len(workload_rows), content_request_volume_checks=2 * len(workload_rows),
               proof_snapshots=8, metadata_api_measured_batches=81,
               artifact_sha256=manifest)
 (root / 'audit.json').write_text(json.dumps(output, indent=2) + '\n')
