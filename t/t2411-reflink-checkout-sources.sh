@@ -1012,4 +1012,29 @@ do
 	'
 done
 
+test_expect_success REFLINK 'an attribute reader closing its input only declines the donor' '
+	test_when_finished "rm -rf pipe-main pipe-donor pipe-target" &&
+	git init -q pipe-main &&
+	git -C pipe-main config extensions.worktreeConfig true &&
+	make_blob_file pipe-main/file 64 &&
+	git -C pipe-main add file &&
+	git -C pipe-main commit -qm pipe &&
+	git -C pipe-main worktree add -q --detach --no-reflink ../pipe-donor &&
+	test-tool chmtime =-60 pipe-donor/file &&
+	git -C pipe-donor add file &&
+	oid=$(git -C pipe-main rev-parse HEAD:file) &&
+	# More input than a pipe can buffer. The child exits before reading it.
+	awk -v oid="$oid" '\''BEGIN {
+		for (i = 0; i < 10000; i++)
+			printf "100644 %s\tpadding-%0120d\n", oid, i
+	}'\'' >pipe-index &&
+	git -C pipe-donor update-index --index-info <pipe-index &&
+	git -C pipe-donor config --worktree core.worktree "$TRASH_DIRECTORY/missing-worktree" &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" git -C pipe-main worktree add -q --detach \
+		--reflink-source=../pipe-donor ../pipe-target &&
+	test_cmp pipe-main/file pipe-target/file &&
+	git -C pipe-target diff-files --quiet &&
+	test_reflink_count cloned 0 trace.json
+'
+
 test_done
