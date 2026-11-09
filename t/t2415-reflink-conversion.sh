@@ -163,8 +163,14 @@ done
 test_expect_success 'source and recipient use distinct worktree conversion config' '
 	setup_source config "text" &&
 	git -C config config extensions.worktreeConfig true &&
+	git -C config config core.autocrlf false &&
 	git -C config config core.eol crlf &&
 	git -C config config --worktree core.eol lf &&
+	# The first checkout used native platform line endings. Recreate
+	# the donor after selecting LF instead of only refreshing its stat data.
+	rm config/file &&
+	git -C config checkout-index -fu file &&
+	! test_has_crlf config/file &&
 	reflink_stable_source config
 '
 
@@ -247,7 +253,7 @@ test_expect_success 'setup same-size ident and historical filter donors' '
 		git -C "$src" config extensions.worktreeConfig true &&
 		make_blob_file "$src/control" 64 &&
 		make_blob_file "$src/file" 64 &&
-		printf "\044Id: %040d \044\n" 0 >>"$src/file" &&
+		printf "\044Id: %s \044\n" "$(test_oid zero)" >>"$src/file" &&
 		echo delay >"$src/zzz" &&
 		git -C "$src" add . &&
 		git -C "$src" commit -qm raw &&
