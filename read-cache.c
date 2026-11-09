@@ -230,13 +230,15 @@ int fake_lstat(const struct cache_entry *ce, struct stat *st)
 
 static int ce_compare_data(struct index_state *istate,
 			   const struct cache_entry *ce,
-			   struct stat *st)
+			   const char *path, struct stat *st)
 {
 	int match = -1;
-	int fd = git_open_cloexec(ce->name, O_RDONLY);
+	int fd = git_open_cloexec(path, O_RDONLY);
 
 	if (fd >= 0) {
 		struct object_id oid;
+
+		/* Conversion attributes belong to the indexed path. */
 		if (!index_fd(istate, &oid, fd, st, OBJ_BLOB, ce->name, 0))
 			match = !oideq(&oid, &ce->oid);
 		/* index_fd() closed the file descriptor already */
@@ -244,7 +246,8 @@ static int ce_compare_data(struct index_state *istate,
 	return match;
 }
 
-static int ce_compare_link(const struct cache_entry *ce, size_t expected_size)
+static int ce_compare_link(const struct cache_entry *ce, const char *path,
+			   size_t expected_size)
 {
 	int match = -1;
 	void *buffer;
@@ -252,7 +255,7 @@ static int ce_compare_link(const struct cache_entry *ce, size_t expected_size)
 	enum object_type type;
 	struct strbuf sb = STRBUF_INIT;
 
-	if (strbuf_readlink(&sb, ce->name, expected_size))
+	if (strbuf_readlink(&sb, path, expected_size))
 		return -1;
 
 	buffer = odb_read_object(the_repository->objects, &ce->oid, &type, &size);
@@ -265,7 +268,7 @@ static int ce_compare_link(const struct cache_entry *ce, size_t expected_size)
 	return match;
 }
 
-static int ce_compare_gitlink(const struct cache_entry *ce)
+static int ce_compare_gitlink(const struct cache_entry *ce, const char *path)
 {
 	struct object_id oid;
 
@@ -277,28 +280,43 @@ static int ce_compare_gitlink(const struct cache_entry *ce)
 	 *
 	 * If so, we consider it always to match.
 	 */
-	if (repo_resolve_gitlink_ref(the_repository, ce->name,
-				     "HEAD", &oid) < 0)
+	if (path != ce->name && strcmp(path, ce->name)) {
+		struct repository repo;
+		struct strbuf gitdir = STRBUF_INIT;
+		int ret;
+
+		/* A checkout destination need not be a submodule path. */
+		strbuf_addf(&gitdir, "%s/.git", path);
+		ret = repo_init(&repo, gitdir.buf, NULL);
+		strbuf_release(&gitdir);
+		if (ret)
+			return 0;
+		ret = refs_read_ref(get_main_ref_store(&repo), "HEAD", &oid);
+		repo_clear(&repo);
+		if (ret || is_null_oid(&oid))
+			return 0;
+	} else if (repo_resolve_gitlink_ref(the_repository, path,
+					    "HEAD", &oid) < 0)
 		return 0;
 	return !oideq(&oid, &ce->oid);
 }
 
 static int ce_modified_check_fs(struct index_state *istate,
 				const struct cache_entry *ce,
-				struct stat *st)
+				const char *path, struct stat *st)
 {
 	switch (st->st_mode & S_IFMT) {
 	case S_IFREG:
-		if (ce_compare_data(istate, ce, st))
+		if (ce_compare_data(istate, ce, path, st))
 			return DATA_CHANGED;
 		break;
 	case S_IFLNK:
-		if (ce_compare_link(ce, xsize_t(st->st_size)))
+		if (ce_compare_link(ce, path, xsize_t(st->st_size)))
 			return DATA_CHANGED;
 		break;
 	case S_IFDIR:
 		if (S_ISGITLINK(ce->ce_mode))
-			return ce_compare_gitlink(ce) ? DATA_CHANGED : 0;
+			return ce_compare_gitlink(ce, path) ? DATA_CHANGED : 0;
 		/* else fallthrough */
 	default:
 		return TYPE_CHANGED;
@@ -306,7 +324,8 @@ static int ce_modified_check_fs(struct index_state *istate,
 	return 0;
 }
 
-static int ce_match_stat_basic(const struct cache_entry *ce, struct stat *st)
+static int ce_match_stat_basic(const struct cache_entry *ce, const char *path,
+			      struct stat *st)
 {
 	unsigned int changed = 0;
 
@@ -332,7 +351,7 @@ static int ce_match_stat_basic(const struct cache_entry *ce, struct stat *st)
 		/* We ignore most of the st_xxx fields for gitlinks */
 		if (!S_ISDIR(st->st_mode))
 			changed |= TYPE_CHANGED;
-		else if (ce_compare_gitlink(ce))
+		else if (ce_compare_gitlink(ce, path))
 			changed |= DATA_CHANGED;
 		return changed;
 	default:
@@ -384,11 +403,20 @@ int ie_match_stat(struct index_state *istate,
 		  const struct cache_entry *ce, struct stat *st,
 		  unsigned int options)
 {
+	return ie_match_stat_path(istate, ce, ce->name, st, options);
+}
+
+int ie_match_stat_path(struct index_state *istate,
+		       const struct cache_entry *ce, const char *path,
+		       struct stat *st, unsigned int options)
+{
 	unsigned int changed;
 	int ignore_valid = options & CE_MATCH_IGNORE_VALID;
 	int ignore_skip_worktree = options & CE_MATCH_IGNORE_SKIP_WORKTREE;
 	int assume_racy_is_modified = options & CE_MATCH_RACY_IS_DIRTY;
-	int ignore_fsmonitor = options & CE_MATCH_IGNORE_FSMONITOR;
+	/* Fsmonitor tracks the worktree path, not a prefixed destination. */
+	int ignore_fsmonitor = (options & CE_MATCH_IGNORE_FSMONITOR) ||
+		(path != ce->name && strcmp(path, ce->name));
 
 	if (!ignore_fsmonitor)
 		refresh_fsmonitor(istate);
@@ -413,7 +441,7 @@ int ie_match_stat(struct index_state *istate,
 	if (ce_intent_to_add(ce))
 		return DATA_CHANGED | TYPE_CHANGED | MODE_CHANGED;
 
-	changed = ce_match_stat_basic(ce, st);
+	changed = ce_match_stat_basic(ce, path, st);
 
 	/*
 	 * Within 1 second of this sequence:
@@ -435,7 +463,7 @@ int ie_match_stat(struct index_state *istate,
 		if (assume_racy_is_modified)
 			changed |= DATA_CHANGED;
 		else
-			changed |= ce_modified_check_fs(istate, ce, st);
+			changed |= ce_modified_check_fs(istate, ce, path, st);
 	}
 
 	return changed;
@@ -486,7 +514,7 @@ int ie_modified(struct index_state *istate,
 	    (S_ISGITLINK(ce->ce_mode) || ce->ce_stat_data.sd_size != 0))
 		return changed;
 
-	changed_fs = ce_modified_check_fs(istate, ce, st);
+	changed_fs = ce_modified_check_fs(istate, ce, ce->name, st);
 	if (changed_fs)
 		return changed | changed_fs;
 	return 0;
@@ -2589,9 +2617,9 @@ static void ce_smudge_racily_clean_entry(struct index_state *istate,
 
 	if (lstat(ce->name, &st) < 0)
 		return;
-	if (ce_match_stat_basic(ce, &st))
+	if (ce_match_stat_basic(ce, ce->name, &st))
 		return;
-	if (ce_modified_check_fs(istate, ce, &st)) {
+	if (ce_modified_check_fs(istate, ce, ce->name, &st)) {
 		/* This is "racily clean"; smudge it.  Note that this
 		 * is a tricky code.  At first glance, it may appear
 		 * that it can break with this sequence:
