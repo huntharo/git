@@ -939,7 +939,15 @@ detach_image () {
 		hdiutil detach -quiet "$1" 2>/dev/null && return 0
 		sleep $delay
 	done
-	hdiutil detach -quiet -force "$1"
+	if hdiutil detach -force "$1"
+	then
+		return 0
+	fi
+	# A concurrent unmount may make detach fail after the volume is gone.
+	# Never remove a still-mounted volume: verify it is back on our device.
+	image_device=$(stat -f %d "$1") &&
+	trash_device=$(stat -f %d "$TRASH_DIRECTORY") &&
+	test "$image_device" = "$trash_device"
 }
 
 # On macOS, a disk image is another filesystem. Creating and attaching
@@ -965,7 +973,7 @@ do
 	'
 
 	test_expect_success "IMAGE_$img" "cleanup: detach $fs disk image" '
-		detach_image "mnt-$img" &&
+		detach_image "$(pwd)/mnt-$img" &&
 		rm -rf "mnt-$img" "$img.dmg"
 	'
 done
@@ -1030,6 +1038,7 @@ test_expect_success REFLINK 'an attribute reader closing its input only declines
 	}'\'' >pipe-index &&
 	git -C pipe-donor update-index --index-info <pipe-index &&
 	git -C pipe-donor config --worktree core.worktree "$TRASH_DIRECTORY/missing-worktree" &&
+	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" git -C pipe-main worktree add -q --detach \
 		--reflink-source=../pipe-donor ../pipe-target &&
 	test_cmp pipe-main/file pipe-target/file &&

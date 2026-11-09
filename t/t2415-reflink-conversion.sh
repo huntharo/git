@@ -33,7 +33,7 @@ checkout_pair () {
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 	git -C "$src" -c checkout.workers=$workers \
 		-c checkout.thresholdForParallelism=0 worktree add -q --detach \
-		--reflink ../actual &&
+		--reflink-source=. ../actual &&
 	describe_tree expect >expect.tree &&
 	describe_tree actual >actual.tree &&
 	test_cmp expect.tree actual.tree &&

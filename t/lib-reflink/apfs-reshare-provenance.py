@@ -110,7 +110,7 @@ for provenance in models:
             run(['chmod', '+a', 'everyone allow read', path])
         if fault in ('quarantine-value', 'quarantine-missing'):
             setxattr(path, 'com.apple.quarantine', b'0081;5f000000;Re-shareOracle;')
-        # Future atime prevents ordinary reads from advancing it on atime mounts.
+        # Use a distinctive atime and verify it before the oracle reads data.
         os.utime(path, ns=(2_000_000_000_000_000_000, old))
         git(target, 'update-index', '--refresh')
         before = metadata(path)
@@ -133,13 +133,17 @@ for provenance in models:
             assert usage(path) == (private, allocated), label
             assert path.stat().st_ino == inode, label
         assert metadata(path) == before, label
-        assert path.read_bytes() == payload, label
         if shared:
             after = metadata(path)
+            shared_inode = path.stat().st_ino
             second = git(target, 'worktree', 'reflink', '--porcelain', extra=extra)
             assert b'status already-shared\n' in second.stdout, label
             assert b'reshare-oracle 0 0 0' in second.stderr, label
-            assert path.stat().st_ino != inode and metadata(path) == after, label
+            actual = metadata(path)
+            assert path.stat().st_ino == shared_inode, label
+            assert actual == after, (label, after, actual)
+        # Reading bytes can update atime. Keep it after all metadata checks.
+        assert path.read_bytes() == payload, label
         git(source, 'worktree', 'remove', '--force', target)
         cases += 1
         print('ok', label, flush=True)

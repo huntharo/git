@@ -628,6 +628,9 @@ test_expect_success CASE_INSENSITIVE_FS 'colliding paths behave as a normal chec
 	git worktree add --detach --reflink wt case-collide 2>actual.err &&
 	sed -e "s/wt.normal/wt/g" expect.err >expect &&
 	test_cmp expect actual.err &&
+	# Both names alias one file. Force content checks so timestamp precision
+	# cannot hide the losing index entry in just one of these checkouts.
+	test-tool chmtime -60 wt.normal/in/a.txt wt/in/a.txt &&
 	test_same_worktree wt.normal wt
 '
 
