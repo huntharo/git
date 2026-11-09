@@ -18,6 +18,7 @@
 #include "odb.h"
 #include "odb/streaming.h"
 #include "parse.h"
+#include "sigchain.h"
 #include "path.h"
 #include "read-cache-ll.h"
 #include "repository.h"
@@ -392,7 +393,11 @@ static int read_source_attributes(struct reflink_source *source)
 	strvec_pushl(&cmd.args, "-c", "core.fsmonitor=false",
 		     "check-attr", "--stdin", "-z", NULL);
 	strvec_pushv(&cmd.args, attrs);
-	if (pipe_command(&cmd, input.buf, input.len, &output, 0, NULL, 0))
+	/* A donor-side failure may close stdin before we finish writing paths. */
+	sigchain_push(SIGPIPE, SIG_IGN);
+	status = pipe_command(&cmd, input.buf, input.len, &output, 0, NULL, 0);
+	sigchain_pop(SIGPIPE);
+	if (status)
 		goto out;
 	CALLOC_ARRAY(source->converted, src->cache_nr);
 	p = output.buf;
