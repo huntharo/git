@@ -1,0 +1,8 @@
+{"mapping":"shared","phase":"unmapped","git_stat_fields_match":true,"lstat_st_gen":0,"fstatat_st_gen":0,"write_generation":2,"mtime_sec":1794241853,"mtime_ns":224295381,"ctime_sec":1794241853,"ctime_ns":224295381}
+{"mapping":"shared","phase":"mapped_fd_closed","git_stat_fields_match":true,"lstat_st_gen":0,"fstatat_st_gen":0,"write_generation":0,"mtime_sec":1794241853,"mtime_ns":224295381,"ctime_sec":1794241853,"ctime_ns":224295381}
+{"mapping":"shared","phase":"stored","git_stat_fields_match":true,"lstat_st_gen":0,"fstatat_st_gen":0,"write_generation":0,"mtime_sec":1794241853,"mtime_ns":224295381,"ctime_sec":1794241853,"ctime_ns":224295381}
+{"mapping":"shared","phase":"unmapped_again","git_stat_fields_match":true,"lstat_st_gen":0,"fstatat_st_gen":0,"write_generation":3,"mtime_sec":1794241853,"mtime_ns":224295381,"ctime_sec":1794241853,"ctime_ns":224457425}
+{"mapping":"private","phase":"unmapped","git_stat_fields_match":true,"lstat_st_gen":0,"fstatat_st_gen":0,"write_generation":2,"mtime_sec":1794241853,"mtime_ns":224592842,"ctime_sec":1794241853,"ctime_ns":224592842}
+{"mapping":"private","phase":"mapped_fd_closed","git_stat_fields_match":true,"lstat_st_gen":0,"fstatat_st_gen":0,"write_generation":2,"mtime_sec":1794241853,"mtime_ns":224592842,"ctime_sec":1794241853,"ctime_ns":224592842}
+{"mapping":"private","phase":"stored","git_stat_fields_match":true,"lstat_st_gen":0,"fstatat_st_gen":0,"write_generation":2,"mtime_sec":1794241853,"mtime_ns":224592842,"ctime_sec":1794241853,"ctime_ns":224592842}
+{"mapping":"private","phase":"unmapped_again","git_stat_fields_match":true,"lstat_st_gen":0,"fstatat_st_gen":0,"write_generation":2,"mtime_sec":1794241853,"mtime_ns":224592842,"ctime_sec":1794241853,"ctime_ns":224592842}
