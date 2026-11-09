@@ -1,0 +1,30 @@
+{
+  "passed": true,
+  "rows": 72,
+  "measured_samples": 1944,
+  "incorrect_baseline_samples": 252,
+  "diagnostics": 216,
+  "proof_snapshots": 8,
+  "metadata_api_measured_batches": 81,
+  "artifact_sha256": {
+    "tooling.json": "7f20ac2f986015305d78125b95e9431a2cecd458b63834656e2ada42aeb8e603",
+    "metadata-api.jsonl": "d946c31bd86449b2b3a9532f19442424e93f71ae45e3157cd0c66e6c627b5a62",
+    "focused-original.log": "fe26e8788a38bb07b23e0e7dcd9d63d9e3f659b4db664398be03dc2df318da8b",
+    "hardware.json": "1856473acaf2bb006db16f7895f0b145b807db25cc59fe14c8c2f6a4a32c9c18",
+    "build-always.log": "1ff022cba5e39c0e7bc5865d7bc563174dcdac11d6dc51002aff4d5dc62562b6",
+    "build-baseline.log": "a3b9f230891978db0789cff56a44b1237ac251ca3783f13fff9287645d3e2d9b",
+    "interposer-self-test.json": "23143d48574bae66545100a511630a178e3b05da2ca571a50967242760356127",
+    "results.json": "76efa1753c9e5a3f95bbcc034fd060e761dd523b2faea05495ad61749fb38c9b",
+    "strong-self-test.json": "f996378d206b41da5af6f896be8102bee30a065161aa029d6b3f68682e848b61",
+    "smoke.log": "74b325fb11d84531a5d226126bf128720de0b613060c186c56f74e83c5edf3fb",
+    "benchmark.log": "7994e569864e3114c9b6f72af7d7266f0562ce9b985452dd6624d5dffb60fd6f",
+    "RESULTS.md": "0a8d26f4a3898aa3ea4ce16d070896c18e9c1ca8840937822b57387aac8af76c",
+    "focused-adapted.log": "6a6b297a81a72d2ef6b4e83d17f8a75ca50257f8226f7ba6f01f74e762723c26",
+    "diagnostics.tsv": "759f4fd774d139db5c5b62e1bf967beadf4c16f2ec12f1eb4e1633bf1b158c54",
+    "combined-proof.jsonl": "b33b505e91cfb66658d265135db6aaf9d6a2019645d00a6924384b5bb90afbbf",
+    ".gitattributes": "9e4c68f52dba3a8bc159fc21134bde90a353b56a7d33360c24df70752f0b418e",
+    "builds.json": "bb3567c35039d48e1d1647d1f7669fa06b4b048f73c9fee221055e2209050203",
+    "smoke.json": "b6d4336f203a8ffcd523a7cfc8c4624ee3b6ab2ef9346ff5ac47ceeb5c164828",
+    "build-selective.log": "c16c704498c73ebf367a057eb3e5b179c3c92bb8b47e6bc002d1fa496bf6f81c"
+  }
+}

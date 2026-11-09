@@ -1,0 +1,8 @@
+{
+  "source": "system_profiler SPHardwareDataType -json",
+  "chip_type": "Apple M2 Max",
+  "machine_model": "Mac14,6",
+  "machine_name": "MacBook Pro",
+  "number_processors": "proc 12:0:8:4",
+  "physical_memory": "32 GB"
+}
