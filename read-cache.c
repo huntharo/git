@@ -39,6 +39,7 @@
 #include "trace2.h"
 #include "varint.h"
 #include "split-index.h"
+#include "ewah/ewok.h"
 #include "symlinks.h"
 #include "utf8.h"
 #include "fsmonitor.h"
@@ -1709,7 +1710,8 @@ int verify_index_checksum;
 /* Allow fsck to force verification of the cache entry order. */
 int verify_ce_order;
 
-static int verify_hdr(const struct cache_header *hdr, unsigned long size)
+static int verify_hdr(const struct cache_header *hdr, unsigned long size,
+		      int quiet)
 {
 	struct git_hash_ctx c;
 	unsigned char hash[GIT_MAX_RAWSZ];
@@ -1718,12 +1720,17 @@ static int verify_hdr(const struct cache_header *hdr, unsigned long size)
 	struct object_id oid;
 
 	if (hdr->hdr_signature != htonl(CACHE_SIGNATURE))
-		return error(_("bad signature 0x%08x"), hdr->hdr_signature);
+		return quiet ? -1 :
+			error(_("bad signature 0x%08x"), hdr->hdr_signature);
 	hdr_version = ntohl(hdr->hdr_version);
 	if (hdr_version < INDEX_FORMAT_LB || INDEX_FORMAT_UB < hdr_version)
-		return error(_("bad index version %d"), hdr_version);
+		return quiet ? -1 : error(_("bad index version %d"), hdr_version);
 
-	if (!verify_index_checksum)
+	/*
+	 * A gentle read is of an index we must not trust blindly, so always
+	 * check it, even though our own index is normally not checked.
+	 */
+	if (!verify_index_checksum && !quiet)
 		return 0;
 
 	end = (unsigned char *)hdr + size;
@@ -1736,13 +1743,33 @@ static int verify_hdr(const struct cache_header *hdr, unsigned long size)
 	git_hash_update(&c, hdr, size - the_hash_algo->rawsz);
 	git_hash_final(hash, &c);
 	if (!hasheq(hash, start, the_repository->hash_algo))
-		return error(_("bad index file sha1 signature"));
+		return quiet ? -1 : error(_("bad index file sha1 signature"));
 	return 0;
 }
 
 static int read_index_extension(struct index_state *istate,
-				const char *ext, const char *data, unsigned long sz)
+				const char *ext, const char *data, unsigned long sz,
+				unsigned flags)
 {
+	/*
+	 * A gentle read is of someone else's index: only what is needed
+	 * to know its entries (the split index link, the sparse marker)
+	 * is parsed, so that nothing else can complain or fail.
+	 */
+	if (flags & READ_INDEX_GENTLY) {
+		switch (CACHE_EXT(ext)) {
+		case CACHE_EXT_LINK:
+			if (sz < the_hash_algo->rawsz)
+				return -1;
+			return read_link_extension(istate, data, sz) ? -1 : 0;
+		case CACHE_EXT_SPARSE_DIRECTORIES:
+			istate->sparse_index = INDEX_COLLAPSED;
+			return 0;
+		default:
+			return (*ext < 'A' || 'Z' < *ext) ? -1 : 0;
+		}
+	}
+
 	switch (CACHE_EXT(ext)) {
 	case CACHE_EXT_TREE:
 		istate->cache_tree = cache_tree_read(istate->repo, data, sz);
@@ -2005,6 +2032,8 @@ struct load_index_extensions
 	const char *mmap;
 	size_t mmap_size;
 	unsigned long src_offset;
+	unsigned flags;
+	int failed;
 };
 
 static void *load_index_extensions(void *_data)
@@ -2020,10 +2049,16 @@ static void *load_index_extensions(void *_data)
 		 * in 4-byte network byte order.
 		 */
 		uint32_t extsize = get_be32(p->mmap + src_offset + 4);
-		if (read_index_extension(p->istate,
+		if (((p->flags & READ_INDEX_GENTLY) &&
+		     extsize > p->mmap_size - the_hash_algo->rawsz - src_offset - 8) ||
+		    read_index_extension(p->istate,
 					 p->mmap + src_offset,
 					 p->mmap + src_offset + 8,
-					 extsize) < 0) {
+					 extsize, p->flags) < 0) {
+			if (p->flags & READ_INDEX_GENTLY) {
+				p->failed = 1;
+				return NULL;
+			}
 			munmap((void *)p->mmap, p->mmap_size);
 			die(_("index file corrupt"));
 		}
@@ -2058,6 +2093,79 @@ static unsigned long load_cache_entry_block(struct index_state *istate,
 		previous_ce = ce;
 	}
 	return src_offset - start_offset;
+}
+
+/*
+ * For READ_INDEX_GENTLY: check that "nr" entries starting at "offset"
+ * can be parsed by create_from_disk() without dying or reading past the
+ * entries' end, so that a corrupt or newer index makes us fail instead.
+ */
+static int gently_check_cache_entries(const char *mmap, size_t mmap_size,
+				      unsigned long offset, unsigned int version,
+				      unsigned int nr)
+{
+	const unsigned hashsz = the_hash_algo->rawsz;
+	const char *end = mmap + mmap_size - hashsz;
+	const char *ondisk = mmap + offset;
+	size_t previous_len = 0;
+	unsigned int i;
+
+	for (i = 0; i < nr; i++) {
+		const char *flagsp = ondisk + offsetof(struct ondisk_cache_entry, data) + hashsz;
+		const char *name, *nul;
+		unsigned int flags;
+		size_t len, copy_len = 0;
+
+		if (flagsp + 2 * sizeof(uint16_t) > end)
+			return -1;
+		flags = get_be16(flagsp);
+		len = flags & CE_NAMEMASK;
+		if (flags & CE_EXTENDED) {
+			unsigned int extended_flags =
+				get_be16(flagsp + sizeof(uint16_t)) << 16;
+			if (extended_flags & ~CE_EXTENDED_FLAGS)
+				return -1;
+			name = flagsp + 2 * sizeof(uint16_t);
+		} else {
+			name = flagsp + sizeof(uint16_t);
+		}
+		if (version == 4) {
+			const unsigned char *cp = (const unsigned char *)name;
+			uint64_t strip_len;
+
+			/*
+			 * decode_varint() reads at most 10 bytes, and the
+			 * trailing hash after "end" is longer than that, so
+			 * it cannot run off the map; it must only end before
+			 * "end".
+			 */
+			if (name >= end)
+				return -1;
+			strip_len = decode_varint(&cp);
+			if ((const char *)cp >= end || strip_len > previous_len)
+				return -1;
+			copy_len = previous_len - strip_len;
+			name = (const char *)cp;
+		}
+		nul = memchr(name, '\0', end - name);
+		if (!nul)
+			return -1;
+		if (len == CE_NAMEMASK)
+			len = (nul - name) + copy_len;
+		if (version == 4) {
+			if (len < copy_len || (size_t)(nul - name) != len - copy_len)
+				return -1;
+			ondisk = nul + 1;
+		} else {
+			size_t size = ondisk_cache_entry_size(ondisk_data_size(flags, len));
+			/* the name must be NUL-terminated right at "len" */
+			if (name + len != nul || ondisk + size > end)
+				return -1;
+			ondisk += size;
+		}
+		previous_len = len;
+	}
+	return 0;
 }
 
 static unsigned long load_all_cache_entries(struct index_state *istate,
@@ -2206,7 +2314,8 @@ static void set_new_index_sparsity(struct index_state *istate)
 }
 
 /* remember to discard_cache() before reading a different cache! */
-int do_read_index(struct index_state *istate, const char *path, int must_exist)
+static int do_read_index_flags(struct index_state *istate, const char *path,
+			       int must_exist, unsigned flags)
 {
 	int fd;
 	struct stat st;
@@ -2227,29 +2336,76 @@ int do_read_index(struct index_state *istate, const char *path, int must_exist)
 	fd = open(path, O_RDONLY);
 	if (fd < 0) {
 		if (!must_exist && errno == ENOENT) {
-			set_new_index_sparsity(istate);
+			if (!(flags & READ_INDEX_RAW))
+				set_new_index_sparsity(istate);
 			istate->initialized = 1;
 			return 0;
 		}
+		if (flags & READ_INDEX_GENTLY)
+			return -1;
 		die_errno(_("%s: index file open failed"), path);
 	}
 
-	if (fstat(fd, &st))
+	if (fstat(fd, &st)) {
+		if (flags & READ_INDEX_GENTLY) {
+			close(fd);
+			return -1;
+		}
 		die_errno(_("%s: cannot stat the open index"), path);
+	}
 
 	mmap_size = xsize_t(st.st_size);
-	if (mmap_size < sizeof(struct cache_header) + the_hash_algo->rawsz)
+	if (mmap_size < sizeof(struct cache_header) + the_hash_algo->rawsz) {
+		if (flags & READ_INDEX_GENTLY) {
+			close(fd);
+			return -1;
+		}
 		die(_("%s: index file smaller than expected"), path);
+	}
 
 	mmap = xmmap_gently(NULL, mmap_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	if (mmap == MAP_FAILED)
+	if (mmap == MAP_FAILED) {
+		if (flags & READ_INDEX_GENTLY) {
+			close(fd);
+			return -1;
+		}
 		die_errno(_("%s: unable to map index file%s"), path,
 			mmap_os_err());
+	}
 	close(fd);
 
 	hdr = (const struct cache_header *)mmap;
-	if (verify_hdr(hdr, mmap_size) < 0)
+	if (verify_hdr(hdr, mmap_size, flags & READ_INDEX_GENTLY) < 0) {
+		if (flags & READ_INDEX_GENTLY) {
+			munmap((void *)mmap, mmap_size);
+			return -1;
+		}
 		goto unmap;
+	}
+
+	/*
+	 * Every entry takes at least its fixed part plus a NUL. Without a
+	 * checksum (index.skipHash) nothing else protects a gentle read
+	 * from a corrupt entry count.
+	 */
+	if ((flags & READ_INDEX_GENTLY) &&
+	    ntohl(hdr->hdr_entries) > (mmap_size - sizeof(*hdr) - the_hash_algo->rawsz) /
+				      (offsetof(struct ondisk_cache_entry, data) +
+				       the_hash_algo->rawsz + 1)) {
+		munmap((void *)mmap, mmap_size);
+		return -1;
+	}
+	/*
+	 * Check the entries before "istate" holds any of them, so that a
+	 * failed gentle read leaves no half-filled cache array behind.
+	 */
+	if ((flags & READ_INDEX_GENTLY) &&
+	    gently_check_cache_entries(mmap, mmap_size, sizeof(*hdr),
+				       ntohl(hdr->hdr_version),
+				       ntohl(hdr->hdr_entries))) {
+		munmap((void *)mmap, mmap_size);
+		return -1;
+	}
 
 	oidread(&istate->oid, (const unsigned char *)hdr + mmap_size - the_hash_algo->rawsz,
 		the_repository->hash_algo);
@@ -2262,6 +2418,8 @@ int do_read_index(struct index_state *istate, const char *path, int must_exist)
 	p.istate = istate;
 	p.mmap = mmap;
 	p.mmap_size = mmap_size;
+	p.flags = flags;
+	p.failed = 0;
 
 	src_offset = sizeof(*hdr);
 
@@ -2277,6 +2435,10 @@ int do_read_index(struct index_state *istate, const char *path, int must_exist)
 	}
 
 	if (!HAVE_THREADS)
+		nr_threads = 1;
+
+	/* keep a gentle read simple: no threads, no EOIE/IEOT parsing */
+	if (flags & READ_INDEX_GENTLY)
 		nr_threads = 1;
 
 	if (nr_threads > 1) {
@@ -2321,11 +2483,16 @@ int do_read_index(struct index_state *istate, const char *path, int must_exist)
 		load_index_extensions(&p);
 	}
 	munmap((void *)mmap, mmap_size);
+	if (p.failed)
+		return -1;
 
 	trace2_data_intmax("index", istate->repo, "read/version",
 			   istate->version);
 	trace2_data_intmax("index", istate->repo, "read/cache_nr",
 			   istate->cache_nr);
+
+	if (flags & READ_INDEX_RAW)
+		return istate->cache_nr;
 
 	/*
 	 * If the command explicitly requires a full index, force it
@@ -2345,6 +2512,11 @@ unmap:
 	die(_("index file corrupt"));
 }
 
+int do_read_index(struct index_state *istate, const char *path, int must_exist)
+{
+	return do_read_index_flags(istate, path, must_exist, 0);
+}
+
 /*
  * Signal that the shared index is used by updating its mtime.
  *
@@ -2357,8 +2529,26 @@ static void freshen_shared_index(const char *shared_index, int warn)
 		warning(_("could not freshen shared index '%s'"), shared_index);
 }
 
-int read_index_from(struct index_state *istate, const char *path,
-		    const char *gitdir)
+/*
+ * A failed gentle read may have parsed a split index link extension;
+ * its bitmaps are normally consumed by merge_base_index().
+ */
+static void gently_free_split_bitmaps(struct index_state *istate)
+{
+	struct split_index *si = istate->split_index;
+
+	if (!si)
+		return;
+	if (si->delete_bitmap)
+		ewah_free(si->delete_bitmap);
+	if (si->replace_bitmap)
+		ewah_free(si->replace_bitmap);
+	si->delete_bitmap = NULL;
+	si->replace_bitmap = NULL;
+}
+
+int read_index_from_flags(struct index_state *istate, const char *path,
+			  const char *gitdir, unsigned flags)
 {
 	struct split_index *split_index;
 	int ret;
@@ -2372,14 +2562,20 @@ int read_index_from(struct index_state *istate, const char *path,
 	trace2_region_enter_printf("index", "do_read_index", istate->repo,
 				   "%s", path);
 	trace_performance_enter();
-	ret = do_read_index(istate, path, 0);
+	ret = do_read_index_flags(istate, path, 0, flags);
 	trace_performance_leave("read cache %s", path);
 	trace2_region_leave_printf("index", "do_read_index", istate->repo,
 				   "%s", path);
 
+	if (ret < 0) {
+		gently_free_split_bitmaps(istate);
+		return ret;
+	}
+
 	split_index = istate->split_index;
 	if (!split_index || is_null_oid(&split_index->base_oid)) {
-		post_read_index_from(istate);
+		if (!(flags & READ_INDEX_RAW))
+			post_read_index_from(istate);
 		return ret;
 	}
 
@@ -2396,7 +2592,8 @@ int read_index_from(struct index_state *istate, const char *path,
 		trace2_region_enter_printf("index", "shared/do_read_index",
 					the_repository, "%s", base_path);
 
-		ret = do_read_index(split_index->base, base_path, 0);
+		ret = do_read_index_flags(split_index->base, base_path, 0,
+					  flags);
 		trace2_region_leave_printf("index", "shared/do_read_index",
 					the_repository, "%s", base_path);
 	} else {
@@ -2406,22 +2603,38 @@ int read_index_from(struct index_state *istate, const char *path,
 		free(path_copy);
 		trace2_region_enter_printf("index", "shared/do_read_index",
 					   the_repository, "%s", base_path2);
-		ret = do_read_index(split_index->base, base_path2, 1);
+		ret = do_read_index_flags(split_index->base, base_path2, 1,
+					  flags);
 		trace2_region_leave_printf("index", "shared/do_read_index",
 					   the_repository, "%s", base_path2);
 		free(base_path2);
+	}
+	if ((flags & READ_INDEX_GENTLY) &&
+	    (ret < 0 || !oideq(&split_index->base_oid, &split_index->base->oid))) {
+		gently_free_split_bitmaps(istate);
+		trace_performance_leave("read cache %s", base_path);
+		free(base_path);
+		return -1;
 	}
 	if (!oideq(&split_index->base_oid, &split_index->base->oid))
 		die(_("broken index, expect %s in %s, got %s"),
 		    base_oid_hex, base_path,
 		    oid_to_hex(&split_index->base->oid));
 
-	freshen_shared_index(base_path, 0);
+	if (!(flags & READ_INDEX_RAW))
+		freshen_shared_index(base_path, 0);
 	merge_base_index(istate);
-	post_read_index_from(istate);
+	if (!(flags & READ_INDEX_RAW))
+		post_read_index_from(istate);
 	trace_performance_leave("read cache %s", base_path);
 	free(base_path);
 	return ret;
+}
+
+int read_index_from(struct index_state *istate, const char *path,
+		    const char *gitdir)
+{
+	return read_index_from_flags(istate, path, gitdir, 0);
 }
 
 int is_index_unborn(struct index_state *istate)

@@ -281,6 +281,25 @@ int do_read_index(struct index_state *istate, const char *path,
 		  int must_exist); /* for testting only! */
 int read_index_from(struct index_state *, const char *path,
 		    const char *gitdir);
+
+/*
+ * Flags for read_index_from_flags():
+ *
+ * READ_INDEX_GENTLY: return -1, silently, instead of dying when the index
+ * cannot be opened, has a bad header, version or checksum, uses an
+ * extension we do not understand, or its shared index is missing or
+ * does not match. (An index whose checksum is valid, or disabled by
+ * index.skipHash, is otherwise trusted to be well-formed.)
+ *
+ * READ_INDEX_RAW: read the index as it is on disk, for looking at another
+ * worktree's index: do not adjust its sparsity to this repository's
+ * settings, do not touch the untracked cache, split index or fsmonitor
+ * state, and do not freshen the shared index.
+ */
+#define READ_INDEX_GENTLY (1 << 0)
+#define READ_INDEX_RAW    (1 << 1)
+int read_index_from_flags(struct index_state *, const char *path,
+			  const char *gitdir, unsigned flags);
 int is_index_unborn(struct index_state *);
 
 /* For use with `write_locked_index()`. */

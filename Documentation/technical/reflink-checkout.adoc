@@ -1,0 +1,103 @@
+Reflink checkout
+================
+
+Reflink checkout uses an unchanged file in another worktree as a copy-on-write
+source when checkout must create a regular file. It saves private allocation
+while retaining the ordinary checkout output and independent file metadata.
+It does not change object storage or the `git clone` command.
+
+Candidate selection and output integrity
+----------------------------------------
+
+The source worktree is selected by its per-worktree `reflink-source` marker,
+then `checkout.reflinkSource`, then the main worktree. Administrative worktree
+identities in the marker survive `git worktree move`. Missing, bare and self
+candidates fall back as described in git-config(1). Source and target must
+be on the same supported filesystem.
+
+Read the source index without applying the recipient's sparse, untracked-cache,
+split-index or fsmonitor settings. An unreadable or unsupported index declines
+the optimization. A source entry must have the requested object ID, be a
+stage-zero regular file, and not be sparse, removed or intent-to-add.
+
+Open the source without following a leaf symlink or blocking on a special file.
+Reject non-directory or symlinked parents below its worktree root. Match its
+real descriptor stat using the ordinary index checks, ignoring another
+worktree's assume-valid, skip-worktree and fsmonitor promises. Racy donors and
+configurations disabling ctime/stat checks decline cloning. No source stat is
+copied into the recipient's index.
+
+Index identity is normalized identity; current attributes and equal file sizes
+cannot prove the source's physical representation. A historical same-size
+filter or ident expansion may leave different checkout bytes behind. Compare
+EVERY cloned snapshot with the recipient's ordinary output before accepting it.
+Stream ordinary no-op or explicit EOL output where possible; auto-EOL conversion
+uses the existing converter's binary/mixed-ending detection. Recipient filters,
+working-tree encoding and ident use the ordinary writer. Source filters and
+encodings remain conservative eligibility gates, rather than an integrity proof.
+
+Recheck the source descriptor after cloning. On any mismatch or failure,
+discard the clone and invoke the ordinary writer. The clone snapshot is the
+comparison input, so later writes to the source cannot change accepted output.
+Object reading and its existing integrity/hash implementations are unchanged.
+
+Platform interface and metadata
+-------------------------------
+
+`compat/reflink.c` contains the platform calls behind `reflink.h`. Linux creates
+an exclusive new file with the normal checkout mode/umask and applies FICLONE
+on btrfs, XFS, bcachefs and overlayfs. APFS uses fclonefileat from the checked
+source descriptor, then strips inherited xattrs except kernel-managed
+com.apple.provenance, applies the checkout mode/umask, and sets fresh birth,
+modification and access times in one descriptor attribute update. New-file ACL
+and group inheritance follow the destination directory. Special source flags
+are declined on APFS.
+
+Windows and other unsupported systems return an unsupported result. Filesystem,
+permission and clone failures fall back to ordinary creation. Unsupported
+cross-filesystem/syscall results disable repeated attempts; a bounded initial
+failure run also avoids repeating a consistently unsuccessful clone operation.
+
+Checkout integration and cost
+-----------------------------
+
+The sequential writer and parallel checkout workers try the same operation.
+Successful creation records the destination's actual stat through ordinary
+checkout bookkeeping. Existing unchanged paths return before creation and keep
+their inodes and sharing, even if the original source worktree has changed.
+No-op checkout is not an existing-file re-sharing command.
+
+For an N-byte successful raw clone, output verification reads N clone bytes and
+ordinary object output, with inflation and O(N) comparison. It avoids the file
+data write/allocation but does not promise lower elapsed time. Source indexes
+and attribute queries are cached per process; workers multiply their cost.
+Trace2 counters distinguish clone attempts, failures, accepted clones and
+output-comparison bytes.
+
+`GIT_TEST_REFLINK_CHECKOUT=1` supplies scratch donors where needed to exercise
+clone metadata handling throughout tests. `corrupt` forces snapshot rejection
+and ordinary fallback. The focused reflink suites additionally verify actual
+allocation/sharing and exact ordinary output, rather than trusting counters.
+
+Automatic alternate donors
+---------------------------
+
+When neither a nonempty source marker nor checkout.reflinkSource names a source,
+try the automatic primary first. Only after its failure enumerate alternate
+worktrees in administrative-ID order, admitting at most four additional usable
+same-filesystem sources. Read each admitted index lazily once per process and
+cache negative lookups. An OID miss does not invoke attribute subprocesses.
+Explicit marker/config/command-line selections remain single-source, including
+when unavailable; their existing primary fallback rules do not expand the search.
+
+Every selected descriptor retains its own source index for stat/race checks.
+If a cloned physical representation differs from ordinary output, discard it
+and try the next bounded candidate. The byte comparison remains mandatory.
+Primary hits perform no alternate enumeration, index reading or attribute query.
+
+The bound limits index count, not bytes: memory scales with admitted decoded
+index sizes and is multiplied by checkout workers. Enumeration sorts all W
+administrative worktrees, with O(W log W) ordering and O(W) metadata work.
+A candidate whose OID matches also incurs its batched attribute/config queries.
+This can cost substantially more than ordinary checkout in large-index fixtures;
+actual storage sharing is the benefit, and no latency improvement is promised.
