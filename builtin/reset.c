@@ -38,6 +38,7 @@
 #include "trace2.h"
 #include "dir.h"
 #include "add-interactive.h"
+#include "reflink-checkout.h"
 
 #define REFRESH_INDEX_DELAY_WARNING_IN_MS (2 * 1000)
 
@@ -541,6 +542,16 @@ int cmd_reset(int argc,
 	}
 	if (!pathspec.nr)
 		remove_branch_state(the_repository, 0);
+
+	if (reset_type == HARD && !update_ref_status &&
+	    !git_env_bool("GIT_INTERNAL_WORKTREE_ADD_CHECKOUT", 0) &&
+	    reflink_checkout_enabled(the_repository)) {
+		struct reflink_reshare_options opts = { .quiet = 1 };
+
+		/* A physical optimization must not alter reset's result or status. */
+		if (reflink_reshare_worktree(the_repository, &opts))
+			warning(_("reset completed, but worktree re-sharing was incomplete"));
+	}
 
 	discard_index(the_repository->index);
 

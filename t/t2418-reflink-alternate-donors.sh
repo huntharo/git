@@ -4,12 +4,22 @@ test_description='bounded automatic reflink donors and preservation of clone gro
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-reflink.sh
 
-
+test_lazy_prereq RESHARE '
+	case $(uname -s) in
+	Darwin) test-tool reflink probe . ;;
+	*) test-tool reflink dedupe-probe . ;;
+	esac
+'
 
 inode () {
 	test-tool reflink metadata "$1" | sed "/^birth /d" | awk "{print \$2}"
 }
 
+private_a () {
+	cat auto/A/file >auto/A/file.private &&
+	mv auto/A/file.private auto/A/file &&
+	reflink_stable_source auto/A
+}
 
 test_expect_success 'setup automatic main plus retained old donor' '
 	git init -q auto/main &&
@@ -55,6 +65,17 @@ test_expect_success REFLINK 'other-file branch transitions preserve the existing
 	reflink_stable_source auto/B
 '
 
+test_expect_success RESHARE 'already-shared inspection never looks up alternate donors or replaces files' '
+	inode auto/A/file >before.inode &&
+	rm -f trace.json &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" git -C auto/A worktree reflink --porcelain >out &&
+	inode auto/A/file >after.inode &&
+	test_cmp before.inode after.inode &&
+	test_grep "^status already-shared$" out &&
+	test_reflink_count alternate-enumeration 0 trace.json &&
+	test_reflink_count alternate-index-read 0 trace.json
+'
+
 for workers in 1 8
 do
 	test_expect_success REFLINK "creation finds retained blob outside main ($workers workers)" '
@@ -85,6 +106,18 @@ do
 	'
 done
 
+test_expect_success RESHARE 'explicit repair finds B for private A without main holding that blob' '
+	private_a &&
+	test_not_shared auto/A/file auto/B/file &&
+	rm -f trace.json &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" git -C auto/A worktree reflink --porcelain >out &&
+	test_grep "^status reshared$" out &&
+	test_shared auto/A/file auto/B/file &&
+	test_cmp auto/A/file auto/B/file &&
+	test_reflink_count alternate-enumeration 1 trace.json &&
+	test_reflink_count alternate-index-read 1 trace.json
+'
+
 test_expect_success REFLINK 'explicit CLI, marker and configured sources remain single-source' '
 	test_when_finished "git -C auto/main worktree remove -f ../explicit" &&
 	rm -f trace.json &&
@@ -99,6 +132,16 @@ test_expect_success REFLINK 'explicit CLI, marker and configured sources remain 
 	rm auto/A/file trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 	git -C auto/A -c checkout.reflinkSource="$(pwd)/auto/main" checkout -- file &&
+	test_not_shared auto/A/file auto/B/file &&
+	test_reflink_count alternate-enumeration 0 trace.json
+'
+
+test_expect_success RESHARE 'explicit repair source does not spill into alternate donors' '
+	private_a &&
+	rm -f trace.json &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" \
+	git -C auto/A worktree reflink --reflink-source="$(pwd)/auto/main" --porcelain >out &&
+	test_grep "^reason no-donor$" out &&
 	test_not_shared auto/A/file auto/B/file &&
 	test_reflink_count alternate-enumeration 0 trace.json
 '
@@ -195,6 +238,16 @@ do
 		test_cmp representation/B/file representation/target/file
 	'
 done
+
+test_expect_success RESHARE 'repair retries a primary with different physical bytes' '
+	test_when_finished "git -C representation/main worktree remove -f ../target" &&
+	git -C representation/main worktree add -q --no-reflink --detach ../target &&
+	reflink_stable_source representation/target &&
+	git -C representation/target worktree reflink --porcelain >out &&
+	test_grep "^status reshared$" out &&
+	test_shared representation/B/file representation/target/file &&
+	test_cmp representation/B/file representation/target/file
+'
 
 test_expect_success REFLINK 'alternate index failures are cached and later donors remain eligible' '
 	git -C representation/main worktree add -q --no-reflink --detach ../A &&
