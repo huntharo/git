@@ -24,7 +24,8 @@ setup_source () {
 	reflink_stable_source "$src"
 }
 
-# Compare fresh creation, rather than reset of an existing representation.
+# Compare fresh creation from one explicit donor. Fault hooks must not find
+# the ordinary reference as an automatic alternate and change it as well.
 checkout_pair () {
 	src=$1 &&
 	git -C "$src" -c checkout.workers=$workers \
@@ -33,7 +34,7 @@ checkout_pair () {
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 	git -C "$src" -c checkout.workers=$workers \
 		-c checkout.thresholdForParallelism=0 worktree add -q --detach \
-		--reflink ../actual &&
+		--reflink-source=. ../actual &&
 	describe_tree expect >expect.tree &&
 	describe_tree actual >actual.tree &&
 	test_cmp expect.tree actual.tree &&
@@ -299,8 +300,12 @@ do
 					"$TRASH_DIRECTORY/empty-attributes" || return 1
 			done &&
 			git -C expect -c checkout.reflink=false reset -q --hard &&
+			# Make the reference eligible so source isolation cannot rely on
+			# its checkout accidentally remaining racy.
+			reflink_stable_source expect &&
 			GIT_TRACE2_EVENT="$TRACE_JSON" GIT_INTERNAL_WORKTREE_ADD_CHECKOUT=1 \
 			git -C actual -c checkout.reflink=true -c checkout.workers=$workers \
+				-c checkout.reflinkSource="$TRASH_DIRECTORY/$src" \
 				-c checkout.thresholdForParallelism=0 reset -q --hard &&
 			test_cmp expect/file actual/file &&
 			describe_tree expect >expect.tree &&
