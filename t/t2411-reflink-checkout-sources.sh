@@ -979,4 +979,31 @@ test_expect_success SHM_OTHER_FS 'reflink source on another filesystem (/dev/shm
 	other_fs_test "$other"
 '
 
+for workers in 1 8
+do
+	test_expect_success REFLINK,SYMLINKS "checkout rejects a symlinked donor parent ($workers workers)" '
+		test_when_finished "rm -rf path-source path-target outside-dir" &&
+		git init -q path-source &&
+		git -C path-source config checkout.reflink false &&
+		mkdir path-source/dir &&
+		make_blob_file path-source/dir/file 64 &&
+		git -C path-source add . &&
+		git -C path-source commit -qm nested &&
+		reflink_stable_source path-source &&
+		mv path-source/dir outside-dir &&
+		ln -s ../outside-dir path-source/dir &&
+		test-tool reflink metadata outside-dir/file >before.stat &&
+		test-tool reflink private-bytes outside-dir/file >before.usage &&
+		git -C path-source -c checkout.workers=$workers \
+			-c checkout.thresholdForParallelism=0 worktree add -q --detach \
+			--reflink ../path-target &&
+		test-tool reflink metadata outside-dir/file >after.stat &&
+		test-tool reflink private-bytes outside-dir/file >after.usage &&
+		test_cmp before.stat after.stat &&
+		test_cmp before.usage after.usage &&
+		test_cmp outside-dir/file path-target/dir/file &&
+		test_not_shared outside-dir/file path-target/dir/file
+	'
+done
+
 test_done

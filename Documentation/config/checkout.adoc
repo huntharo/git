@@ -47,19 +47,14 @@ well the parallel version performs.
 	If true, commands that write files to the working tree (checkout,
 	switch, reset, restore, merge, rebase, worktree add, ...) create a
 	file that the worktree's reflink source holds unmodified as a
-	copy-on-write clone of it, so the copies share disk space until one
-	of them is modified. Eligible files must match the source index's
-	normal stat checks and be non-racy. Unconverted clones are not read back
-	or hashed. EOL conversions can share when comparison with the ordinary
-	checkout output establishes the same physical representation. Racy or
-	dirty donors, or disabled ctime/stat checks, use the ordinary writer.
-	As with Git's normal stat
-	cache, edits invisible to those checks can be missed; such a donor
-	can supply bytes that differ from a checkout from the object database.
-	Files subject to a filter driver, `ident` or `working-tree-encoding`
-	on checkout use the ordinary writer. If false, cloning
-	is disabled, even in worktrees created with `git worktree add
-	--reflink` (only that command's own initial checkout still clones).
+	copy-on-write clone of it. Eligible donors must pass the source
+	index's stat checks and be non-racy. Git compares every cloned
+	snapshot with the ordinary recipient output before accepting it.
+	For filters such as LFS, Git runs the normal filter and shares a
+	matching donor only after conversion succeeds or falls back.
+	If false, cloning is disabled, even in worktrees created with
+	`git worktree add --reflink` (only that command's own initial
+	checkout still clones).
 	If unset, worktrees created with `--reflink` clone and others do
 	not. A value that is not a boolean disables cloning, with a
 	warning. Cloning is supported on APFS (macOS) and on btrfs, XFS,
@@ -77,6 +72,10 @@ comparison on Linux or clone/byte-comparison/replacement on APFS. APFS has the
 file-replacement concurrency limits documented in linkgit:git-worktree[1].
 `reset --soft`, `reset --mixed` and no-op checkout/switch do not request this
 repair pass. Explicit false overrides a worktree's reflink-source marker.
+Commands such as `git lfs checkout` and `git lfs pull` write through Git LFS
+itself. To share those existing files, use `git worktree reflink` after
+writers quiesce or let a subsequent reflink-enabled hard reset repair
+eligible paths.
 
 `checkout.reflinkSource`::
 	The worktree that `checkout.reflink` clones files from, given as a
