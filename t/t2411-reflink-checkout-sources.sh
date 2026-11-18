@@ -933,7 +933,15 @@ detach_image () {
 		hdiutil detach -quiet "$1" 2>/dev/null && return 0
 		sleep $delay
 	done
-	hdiutil detach -quiet -force "$1"
+	if hdiutil detach -force "$1"
+	then
+		return 0
+	fi
+	# A concurrent unmount may make detach fail after the volume is gone.
+	# Never remove a still-mounted volume: verify it is back on our device.
+	image_device=$(stat -f %d "$1") &&
+	trash_device=$(stat -f %d "$TRASH_DIRECTORY") &&
+	test "$image_device" = "$trash_device"
 }
 
 # On macOS, a disk image is another filesystem. Creating and attaching

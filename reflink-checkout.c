@@ -40,6 +40,67 @@
 #include <sys/xattr.h>
 #endif
 
+struct reshare_totals {
+	uintmax_t scanned, eligible, already_shared, reshared, skipped, failed;
+	uintmax_t allocated_before, allocated_after, private_before, private_after;
+	uintmax_t potential_private, deduplicated, allocation_unknown;
+	uintmax_t stat_clean, content_checked, content_check_bytes;
+	uintmax_t userspace_compared, native_attempts, native_range_bytes;
+	uintmax_t clone_attempts, comparison_bytes;
+};
+
+static void reshare_summary(struct repository *r,
+			    const struct reflink_reshare_options *opts,
+			    const struct reshare_totals *total)
+{
+	uintmax_t reduction = total->private_before > total->private_after ?
+		total->private_before - total->private_after : 0;
+	char term = opts->nul_termination ? '\0' : '\n';
+
+#define RESHARE_COUNT(name, value) do { \
+	trace2_data_intmax("reflink-reshare", r, name, value); \
+	if (!opts->quiet && opts->porcelain) \
+		printf("%s %"PRIuMAX"%c", name, (uintmax_t)(value), term); \
+} while (0)
+	if (!opts->quiet && opts->porcelain)
+		printf("summary%c", term);
+	RESHARE_COUNT("scanned", total->scanned);
+	RESHARE_COUNT("eligible", total->eligible);
+	RESHARE_COUNT("already-shared", total->already_shared);
+	RESHARE_COUNT("reshared", total->reshared);
+	RESHARE_COUNT("skipped", total->skipped);
+	RESHARE_COUNT("failed", total->failed);
+	RESHARE_COUNT("allocated-before", total->allocated_before);
+	RESHARE_COUNT("allocated-after", total->allocated_after);
+	RESHARE_COUNT("private-before", total->private_before);
+	RESHARE_COUNT("private-after", total->private_after);
+	RESHARE_COUNT("observed-private-reduction", reduction);
+	RESHARE_COUNT("potential-private-reduction", total->potential_private);
+	RESHARE_COUNT("deduplicated-range-bytes", total->deduplicated);
+	RESHARE_COUNT("allocation-unknown", total->allocation_unknown);
+	RESHARE_COUNT("stat-clean", total->stat_clean);
+	RESHARE_COUNT("content-checked", total->content_checked);
+	RESHARE_COUNT("content-check-bytes", total->content_check_bytes);
+	RESHARE_COUNT("userspace-compared", total->userspace_compared);
+	RESHARE_COUNT("native-attempts", total->native_attempts);
+	RESHARE_COUNT("native-range-bytes", total->native_range_bytes);
+	RESHARE_COUNT("clone-attempts", total->clone_attempts);
+	RESHARE_COUNT("comparison-bytes", total->comparison_bytes);
+#undef RESHARE_COUNT
+	if (!opts->quiet && opts->porcelain)
+		putchar(term);
+	else if (!opts->quiet)
+		printf(_("reflink: scanned %"PRIuMAX", eligible %"PRIuMAX", "
+			 "already shared %"PRIuMAX", re-shared %"PRIuMAX", "
+			 "skipped %"PRIuMAX", failed %"PRIuMAX"\n"
+			 "observed private allocation reduction: %"PRIuMAX" bytes; "
+			 "dry-run potential: %"PRIuMAX" bytes; "
+			 "unknown allocation: %"PRIuMAX" paths\n"),
+		       total->scanned, total->eligible, total->already_shared,
+		       total->reshared, total->skipped, total->failed,
+		       reduction, total->potential_private, total->allocation_unknown);
+}
+
 /*
  * A reflink source is named by its administrative directory relative
  * to the common directory: "." for the main worktree, "worktrees/<id>"
@@ -671,15 +732,6 @@ struct reshare_result {
 	uintmax_t deduplicated;
 };
 
-struct reshare_totals {
-	uintmax_t scanned, eligible, already_shared, reshared, skipped, failed;
-	uintmax_t allocated_before, allocated_after, private_before, private_after;
-	uintmax_t potential_private, deduplicated, allocation_unknown;
-	uintmax_t stat_clean, content_checked, content_check_bytes;
-	uintmax_t userspace_compared, native_attempts, native_range_bytes;
-	uintmax_t clone_attempts, comparison_bytes;
-};
-
 int reflink_checkout_enabled(struct repository *r)
 {
 	if (!rc.initialized)
@@ -860,58 +912,6 @@ static void reshare_path(const struct reflink_reshare_options *opts,
 		if (result->error_code)
 			printf("  %s\n", strerror(result->error_code));
 	}
-}
-
-static void reshare_summary(struct repository *r,
-			    const struct reflink_reshare_options *opts,
-			    const struct reshare_totals *total)
-{
-	uintmax_t reduction = total->private_before > total->private_after ?
-		total->private_before - total->private_after : 0;
-	char term = opts->nul_termination ? '\0' : '\n';
-
-#define RESHARE_COUNT(name, value) do { \
-	trace2_data_intmax("reflink-reshare", r, name, value); \
-	if (!opts->quiet && opts->porcelain) \
-		printf("%s %"PRIuMAX"%c", name, (uintmax_t)(value), term); \
-} while (0)
-	if (!opts->quiet && opts->porcelain)
-		printf("summary%c", term);
-	RESHARE_COUNT("scanned", total->scanned);
-	RESHARE_COUNT("eligible", total->eligible);
-	RESHARE_COUNT("already-shared", total->already_shared);
-	RESHARE_COUNT("reshared", total->reshared);
-	RESHARE_COUNT("skipped", total->skipped);
-	RESHARE_COUNT("failed", total->failed);
-	RESHARE_COUNT("allocated-before", total->allocated_before);
-	RESHARE_COUNT("allocated-after", total->allocated_after);
-	RESHARE_COUNT("private-before", total->private_before);
-	RESHARE_COUNT("private-after", total->private_after);
-	RESHARE_COUNT("observed-private-reduction", reduction);
-	RESHARE_COUNT("potential-private-reduction", total->potential_private);
-	RESHARE_COUNT("deduplicated-range-bytes", total->deduplicated);
-	RESHARE_COUNT("allocation-unknown", total->allocation_unknown);
-	RESHARE_COUNT("stat-clean", total->stat_clean);
-	RESHARE_COUNT("content-checked", total->content_checked);
-	RESHARE_COUNT("content-check-bytes", total->content_check_bytes);
-	RESHARE_COUNT("userspace-compared", total->userspace_compared);
-	RESHARE_COUNT("native-attempts", total->native_attempts);
-	RESHARE_COUNT("native-range-bytes", total->native_range_bytes);
-	RESHARE_COUNT("clone-attempts", total->clone_attempts);
-	RESHARE_COUNT("comparison-bytes", total->comparison_bytes);
-#undef RESHARE_COUNT
-	if (!opts->quiet && opts->porcelain)
-		putchar(term);
-	else if (!opts->quiet)
-		printf(_("reflink: scanned %"PRIuMAX", eligible %"PRIuMAX", "
-			 "already shared %"PRIuMAX", re-shared %"PRIuMAX", "
-			 "skipped %"PRIuMAX", failed %"PRIuMAX"\n"
-			 "observed private allocation reduction: %"PRIuMAX" bytes; "
-			 "dry-run potential: %"PRIuMAX" bytes; "
-			 "unknown allocation: %"PRIuMAX" paths\n"),
-		       total->scanned, total->eligible, total->already_shared,
-		       total->reshared, total->skipped, total->failed,
-		       reduction, total->potential_private, total->allocation_unknown);
 }
 
 /* A deterministic hook for concurrent-write/path-replacement regressions. */
@@ -1318,17 +1318,21 @@ int reflink_checkout_enabled(struct repository *r UNUSED)
 	return 0;
 }
 
-int reflink_reshare_worktree(struct repository *r UNUSED,
+int reflink_reshare_worktree(struct repository *r,
 			     const struct reflink_reshare_options *opts)
 {
+	struct reshare_totals total = { 0 };
 	char term = opts->nul_termination ? '\0' : '\n';
 
-	if (!opts->quiet && opts->porcelain)
-		printf("reflink 1%cbackend unsupported%c%csummary%cscanned 0%c"
-		       "eligible 0%calready-shared 0%creshared 0%cskipped 0%cfailed 0%c%c",
-		       term, term, term, term, term, term, term, term, term, term, term);
-	else if (!opts->quiet)
+	if (!opts->quiet && opts->porcelain) {
+		printf("reflink 1%cworktree ", term);
+		write_name_quoted(r->worktree, stdout, term);
+		printf("dry-run %d%cbackend unsupported%c%c", !!opts->dry_run,
+		       term, term, term);
+		reshare_summary(r, opts, &total);
+	} else if (!opts->quiet) {
 		printf(_("reflink: safe in-place deduplication is unsupported\n"));
+	}
 	return 0;
 }
 

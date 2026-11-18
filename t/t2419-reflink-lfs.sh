@@ -29,6 +29,15 @@ sha256 () {
 	fi | cut -d" " -f1
 }
 
+# Set up the standard driver without installing hooks or depending on
+# the version-specific flags of git lfs install.
+configure_lfs () {
+	git -C "$1" config filter.lfs.clean "git-lfs clean -- %f" &&
+	git -C "$1" config filter.lfs.smudge "git-lfs smudge -- %f" &&
+	git -C "$1" config filter.lfs.process "git-lfs filter-process" &&
+	git -C "$1" config filter.lfs.required true
+}
+
 lfs_pair () {
 	for wt in ordinary shared
 	do
@@ -69,7 +78,7 @@ test_expect_success GIT_LFS,SHA256SUM 'setup LFS payload, committed pointer, and
 	git init -q --bare remote.git &&
 	git -C source remote add origin "$TRASH_DIRECTORY/remote.git" &&
 	git -C source config lfs.storage "$TRASH_DIRECTORY/warm" &&
-	git -C source lfs install --local --skip-repo &&
+	configure_lfs source &&
 	echo "*.lfs filter=lfs diff=lfs merge=lfs -text" >source/.gitattributes &&
 	test-tool genrandom payload 131072 >payload &&
 	cp payload "source/$asset" &&
@@ -95,7 +104,7 @@ test_expect_success GIT_LFS,SHA256SUM 'process and single-file smudge agree with
 	echo "$1" >>"$LFS_LOG"
 	exec git-lfs "$@"
 	EOF
-	test_when_finished "git -C source lfs install --local --skip-repo" &&
+	test_when_finished "configure_lfs source" &&
 	for filter in process smudge
 	do
 		if test "$filter" = smudge
@@ -147,7 +156,7 @@ test_expect_success GIT_LFS,SHA256SUM 'skip-smudge, fetch exclusion and absent d
 	done &&
 	# An unknown driver is distinct from a configured but failed driver.
 	git -C source config --remove-section filter.lfs &&
-	test_when_finished "git -C source lfs install --local --skip-repo" &&
+	test_when_finished "configure_lfs source" &&
 	lfs_pair &&
 	test_cmp pointer "shared/$asset" &&
 	remove_pair
@@ -213,7 +222,7 @@ test_expect_success GIT_LFS,SHA256SUM 'required download failures survive with a
 		test_path_is_missing "failed/$asset" || return 1
 	done &&
 	git -C source config --unset filter.lfs.process &&
-	test_when_finished "git -C source lfs install --local --skip-repo" &&
+	test_when_finished "configure_lfs source" &&
 	lfs_pair -c filter.lfs.required=false -c "lfs.url=file://$TRASH_DIRECTORY/empty-remote" &&
 	test_cmp pointer "shared/$asset" &&
 	test_grep "external filter.*failed" ordinary.err &&
@@ -298,7 +307,7 @@ test_expect_success GIT_LFS,SHA256SUM,RESHARE 'maintenance shares existing hydra
 
 test_expect_success GIT_LFS,SHA256SUM 'LFS extension output, not the stored transformed data, is shared' '
 	git init -q extension &&
-	git -C extension lfs install --local --skip-repo &&
+	configure_lfs extension &&
 	rot13="tr A-Za-z N-ZA-Mn-za-m" &&
 	git -C extension config lfs.extension.rot.clean "$rot13" &&
 	git -C extension config lfs.extension.rot.smudge "$rot13" &&

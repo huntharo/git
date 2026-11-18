@@ -80,7 +80,8 @@ ubuntu-*|i386/debian-*|debian-*)
 	# See <https://github.com/uutils/coreutils/issues/10508>.
 	if test -x /usr/bin/gnudirname
 	then
-		sudo ln -sfT /usr/bin/gnudirname /usr/bin/dirname
+		sudo rm -f /usr/bin/dirname &&
+		sudo ln -s /usr/bin/gnudirname /usr/bin/dirname
 	fi
 
 	case "$distro" in

@@ -75,7 +75,10 @@ test_expect_success 'porcelain dry-run preserves bytes and metadata on every bac
 	describe_tree target >after.tree &&
 	test_cmp before.tree after.tree &&
 	test_grep "^reflink 1$" out &&
-	test_field scanned 3 out &&
+	if test_have_prereq REFLINK_BUILD
+	then test_field scanned 3 out
+	else test_field scanned 0 out
+	fi &&
 	test_field reshared 0 out &&
 	test_field observed-private-reduction 0 out &&
 	test_not_shared source/plain target/plain &&
@@ -89,7 +92,10 @@ test_expect_success 'NUL porcelain supports a target worktree argument' '
 	tr "\\000" "\\n" <out >lines &&
 	test_grep "^reflink 1$" lines &&
 	test_grep "^dry-run 1$" lines &&
-	test_field scanned 3 lines
+	if test_have_prereq REFLINK_BUILD
+	then test_field scanned 3 lines
+	else test_field scanned 0 lines
+	fi
 '
 
 for workers in 1 8
@@ -203,7 +209,10 @@ test_expect_success 'unsupported backend explicitly reports safe skips' '
 	metadata >after.stat &&
 	test_cmp before.stat after.stat &&
 	test_grep "^backend unsupported$" out &&
-	test_grep "^reason unsupported-safe-dedupe$" out &&
+	if test_have_prereq REFLINK_BUILD
+	then test_grep "^reason unsupported-safe-dedupe$" out
+	else test_field scanned 0 out
+	fi &&
 	test_field reshared 0 out &&
 	test_not_shared source/plain target/plain
 '
