@@ -359,7 +359,7 @@ void write_pc_item(struct parallel_checkout_item *pc_item,
 		goto out;
 	}
 
-	if (!reflink_checkout_entry(pc_item->ce, &pc_item->ca, state, path.buf,
+	if (!reflink_checkout_entry(pc_item->ce, &pc_item->ca, state, path.buf, NULL, 0,
 				    &pc_item->st, &fstat_done))
 		goto written;
 

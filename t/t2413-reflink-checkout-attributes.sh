@@ -2,8 +2,7 @@
 
 test_description='reflink checkout: attributes, filters and other features
 
-EOL output must match the recipient conversion. Ident expansion,
-working-tree-encoding and filter drivers use the ordinary writer.
+Sharing requires a match with the ordinary recipient checkout output.
 Sparse checkout, split index, fsmonitor, submodules, symlinks, modes
 and case-insensitive filesystems must all give exactly the result of
 an ordinary checkout.'
@@ -84,8 +83,8 @@ OUTSIDE="out/c.txt out/d/e.txt deep/er/est/nested.txt"
 INSIDE="plain.txt id.txt noid.txt rot.txt proc.txt nodriver.txt utf.txt
 bin.dat exe.sh in/a.txt in/b.txt"
 # Paths that "convert" gives a conversion that "main" does not have.
-CONVERTED="plain.txt id.txt noid.txt rot.txt proc.txt"
-UNCONVERTED="nodriver.txt utf.txt bin.dat exe.sh in/a.txt in/b.txt
+CONVERTED="plain.txt id.txt rot.txt proc.txt"
+UNCONVERTED="noid.txt nodriver.txt utf.txt bin.dat exe.sh in/a.txt in/b.txt
 out/c.txt out/d/e.txt deep/er/est/nested.txt"
 
 test_expect_success 'setup' '
@@ -198,13 +197,13 @@ test_expect_success 'text=auto eol=lf: same as a normal checkout' '
 	test_same_as_checkout wt main
 '
 
-test_expect_success REFLINK 'converted paths are written normally' '
+test_expect_success REFLINK 'paths with different checkout bytes are written normally' '
 	test_when_finished "remove_wt wt" &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt convert &&
 	# .gitattributes differs, so it has no donor
-	test_counts trace.json 9 1 0 1 &&
+	test_counts trace.json 10 1 0 4 &&
 	test_all_shared . wt $UNCONVERTED &&
 	test_none_shared . wt $CONVERTED
 '
@@ -232,7 +231,7 @@ test_expect_success REFLINK 'parallel checkout workers honour eligibility' '
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt convert &&
-	test_counts trace.json 9 1 0 1 &&
+	test_counts trace.json 10 1 0 4 &&
 	grep "\"category\":\"reflink\",\"name\":\"cloned\"" trace.json >workers &&
 	test_line_count -gt 1 workers &&
 	test_all_shared . wt $UNCONVERTED &&
@@ -240,7 +239,7 @@ test_expect_success REFLINK 'parallel checkout workers honour eligibility' '
 	test_same_as_checkout wt convert
 '
 
-test_expect_success REFLINK 'converted donors are ineligible' '
+test_expect_success REFLINK 'a donor with differing bytes cannot determine the output' '
 	test_when_finished "remove_wt src wt" &&
 	git worktree add -q --detach --no-reflink src convert &&
 	reflink_stable_source src &&
@@ -250,7 +249,7 @@ test_expect_success REFLINK 'converted donors are ineligible' '
 	# plain.txt (CRLF), id.txt (expanded), rot.txt and proc.txt
 	# (smudged) do not hold their blob in "src"; noid.txt does.
 	# .gitattributes differs, so it has no donor.
-	test_counts trace.json 10 1 4 0 &&
+	test_counts trace.json 10 1 2 2 &&
 	test_all_shared src wt noid.txt $UNCONVERTED &&
 	test_none_shared src wt plain.txt id.txt rot.txt proc.txt
 '
@@ -312,7 +311,7 @@ test_expect_success ICONV,REFLINK 'working-tree-encoding: written normally' '
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt utf16 &&
-	test_counts trace.json 13 1 0 0 &&
+	test_counts trace.json 13 1 0 1 &&
 	test_none_shared . wt utf.txt &&
 	test_all_shared . wt plain.txt in/a.txt
 '
@@ -323,6 +322,16 @@ test_expect_success ICONV 'working-tree-encoding: same as a normal checkout' '
 	# re-encoded on the way out (with or without a BOM, depending on
 	# the iconv Git uses), exactly as an ordinary checkout writes it
 	! cmp -s utf.txt wt/utf.txt &&
+	test_same_as_checkout wt utf16
+'
+
+test_expect_success ICONV,REFLINK 'matching UTF-16 output shares in the sequential writer' '
+	test_when_finished "remove_wt src wt" &&
+	git worktree add -q --detach --no-reflink src utf16 &&
+	reflink_stable_source src &&
+	git worktree add -q --detach --reflink-source=src wt utf16 &&
+	test_cmp src/utf.txt wt/utf.txt &&
+	test_shared src/utf.txt wt/utf.txt &&
 	test_same_as_checkout wt utf16
 '
 
@@ -632,6 +641,80 @@ test_expect_success CASE_INSENSITIVE_FS 'colliding paths behave as a normal chec
 	# cannot hide the losing index entry in just one of these checkouts.
 	test-tool chmtime -60 wt.normal/in/a.txt wt/in/a.txt &&
 	test_same_worktree wt.normal wt
+'
+
+test_expect_success 'attribute precedence and literal filter names match a per-path model' '
+	test_when_finished "rm -rf attrs-ordinary attrs-shared policy" &&
+	git init -q policy &&
+	git -C policy config checkout.reflink false &&
+	git -C policy config extensions.worktreeConfig true &&
+	write_script attr-smudge <<-\EOF &&
+	printf "%s:" "$1"
+	cat
+	EOF
+	for driver in global root nested info unset unspecified
+	do
+		git -C policy config "filter.$driver.smudge" \
+			"\"$TRASH_DIRECTORY/attr-smudge\" \"$driver\"" || return 1
+	done &&
+	git -C policy config core.attributesFile "$TRASH_DIRECTORY/global.attrs" &&
+	git -C policy config "includeIf.gitdir:**/worktrees/*.path" recipient.conf &&
+	git config --file policy/.git/recipient.conf filter.included.smudge \
+		"\"$TRASH_DIRECTORY/attr-smudge\" included" &&
+	echo "*.model filter=global" >global.attrs &&
+	mkdir policy/nest &&
+	cat >policy/.gitattributes <<-\EOF &&
+	[attr]convert filter=root -text
+	root.model convert
+	nest/** convert
+	unset.model filter=unset
+	unspecified.model filter=unspecified
+	reset.model !filter
+	false.model -filter
+	true.model filter
+	included.model filter=included
+	EOF
+	echo "*.model filter=nested" >policy/nest/.gitattributes &&
+	echo "nest/info.model filter=info" >policy/.git/info/attributes &&
+	cat >model <<-\EOF &&
+	global.model global
+	root.model root
+	nest/file.model nested
+	nest/info.model info
+	unset.model unset
+	unspecified.model unspecified
+	reset.model -
+	false.model -
+	true.model -
+	included.model included
+	EOF
+	while read path driver
+	do
+		printf "payload\n" >"policy/$path" || return 1
+	done <model &&
+	git -C policy add . &&
+	git -C policy commit -qm policies &&
+	# Dirty source .gitattributes should not affect the target tree.
+	echo "* filter=info" >policy/.gitattributes &&
+	for wt in attrs-ordinary attrs-shared
+	do
+		case $wt in
+		attrs-ordinary) flag=--no-reflink ;;
+		attrs-shared) flag=--reflink-source=. ;;
+		esac &&
+		git -C policy -c checkout.reflink=true worktree add -q --detach "$flag" "../$wt" || return 1
+	done &&
+	while read path driver
+	do
+		if test "$driver" = -
+		then
+			printf "payload\n"
+		else
+			printf "%s:payload\n" "$driver"
+		fi >expected &&
+		test_cmp expected "attrs-ordinary/$path" &&
+		test_cmp expected "attrs-shared/$path" || return 1
+	done <model
 '
 
 test_done

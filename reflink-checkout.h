@@ -28,6 +28,9 @@ struct repository;
 /*
  * Try to create "path" for the regular-file entry "ce" by cloning it.
  * "ca" must be the conversion attributes for "ce". "path" must not exist.
+ * If "output" is supplied, compare against these "output_size" bytes from
+ * the ordinary writer. Otherwise derive the expected output without running
+ * an external filter or encoding conversion.
  *
  * Returns 0 if "path" was cloned from an eligible donor, with the mode,
  * owner and timestamps of a newly written file. In that case
@@ -44,6 +47,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 			   const struct conv_attrs *ca,
 			   const struct checkout *state,
 			   const char *path,
+			   const char *output, size_t output_size,
 			   struct stat *st, int *fstat_done);
 
 /*

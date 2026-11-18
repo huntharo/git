@@ -31,13 +31,28 @@ Index identity is normalized identity; current attributes and equal file sizes
 cannot prove the source's physical representation. A historical same-size
 filter or ident expansion may leave different checkout bytes behind. Compare
 EVERY cloned snapshot with the recipient's ordinary output before accepting it.
-Stream ordinary no-op or explicit EOL output where possible; auto-EOL conversion
-uses the existing converter's binary/mixed-ending detection. Recipient filters,
-working-tree encoding and ident use the ordinary writer. Source filters and
-encodings remain conservative eligibility gates, rather than an integrity proof.
+Use the recipient's ordinary conversion attributes and Git's stream and in-core
+converters, including ident and auto-EOL binary and mixed-ending detection.
+The donor's current attributes and configuration are irrelevant to byte
+verification and are never read for candidate selection.
+
+When the sequential writer runs an external filter or encoding conversion, it
+finishes the ordinary conversion first. Only then can checkout share a matching
+snapshot. A declined clone uses that same output buffer for the ordinary write.
+Required failures, optional fallback, checkout metadata and delayed filter
+completion stay on the ordinary path. Parallel workers retain ordinary writes
+for encoded paths.
+
+Git LFS is an external filter. The configured LFS command still runs with the
+recipient's normal config, cache and download policy. It determines whether the
+checkout writes pointer bytes, hydrated bytes or reports an error. Checkout can
+share either representation with an eligible donor whose snapshot matches
+exactly. It does not interpret pointers, trust the donor as an LFS cache or
+skip filter execution. Other paths remain eligible when a filtered path cannot
+share.
 
 Recheck the source descriptor after cloning. On any mismatch or failure,
-discard the clone and invoke the ordinary writer. The clone snapshot is the
+discard the clone and continue the ordinary write. The clone snapshot is the
 comparison input, so later writes to the source cannot change accepted output.
 Object reading and its existing integrity/hash implementations are unchanged.
 
@@ -69,8 +84,10 @@ No-op checkout is not an existing-file re-sharing command.
 
 For an N-byte successful raw clone, output verification reads N clone bytes and
 ordinary object output, with inflation and O(N) comparison. It avoids the file
-data write/allocation but does not promise lower elapsed time. Source indexes
-and attribute queries are cached per process; workers multiply their cost.
+data write/allocation but does not promise lower elapsed time. For buffered
+conversion, verification reads the clone and compares it with output already
+in memory. It does not reduce the cost or memory requirements of conversion.
+Source indexes are cached per process; workers multiply their cost.
 Trace2 counters distinguish clone attempts, failures, accepted clones and
 output-comparison bytes.
 
@@ -86,18 +103,16 @@ When neither a nonempty source marker nor checkout.reflinkSource names a source,
 try the automatic primary first. Only after its failure enumerate alternate
 worktrees in administrative-ID order, admitting at most four additional usable
 same-filesystem sources. Read each admitted index lazily once per process and
-cache negative lookups. An OID miss does not invoke attribute subprocesses.
+cache negative lookups.
 Explicit marker/config/command-line selections remain single-source, including
 when unavailable; their existing primary fallback rules do not expand the search.
 
 Every selected descriptor retains its own source index for stat/race checks.
 If a cloned physical representation differs from ordinary output, discard it
 and try the next bounded candidate. The byte comparison remains mandatory.
-Primary hits perform no alternate enumeration, index reading or attribute query.
+Primary hits perform no alternate enumeration or alternate index reads.
 
 The bound limits index count, not bytes: memory scales with admitted decoded
 index sizes and is multiplied by checkout workers. Enumeration sorts all W
 administrative worktrees, with O(W log W) ordering and O(W) metadata work.
-A candidate whose OID matches also incurs its batched attribute/config queries.
-This can cost substantially more than ordinary checkout in large-index fixtures;
-actual storage sharing is the benefit, and no latency improvement is promised.
+Large indexes can make this cost appreciable even when sharing saves allocation.
