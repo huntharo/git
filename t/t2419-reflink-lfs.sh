@@ -191,6 +191,11 @@ test_expect_success GIT_LFS,SHA256SUM 'cold caches fetch from the local bare rem
 		mv source/.git/lfs "cold-$wt" &&
 		git -C source config lfs.storage "$TRASH_DIRECTORY/warm" || return 1
 	done &&
+	test_not_shared "source/$asset" "ordinary/$asset" &&
+	if test_have_prereq REFLINK
+	then
+		test_shared "source/$asset" "shared/$asset"
+	fi &&
 	remove_pair
 '
 
