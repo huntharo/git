@@ -12,8 +12,11 @@ test_lazy_prereq RESHARE '
 	esac
 '
 
-test_lazy_prereq GIT_LFS '
-	git lfs version
+# The fixture uses a bare repository as a local LFS remote in both directions.
+test_lazy_prereq GIT_LFS_FILE_TRANSPORT '
+	git lfs env >lfs-env &&
+	grep "^DownloadTransfers=.*lfs-standalone-file" lfs-env &&
+	grep "^UploadTransfers=.*lfs-standalone-file" lfs-env
 '
 
 test_lazy_prereq SHA256SUM '
@@ -71,7 +74,7 @@ verify_hydrated () {
 	test_cmp payload "$1"
 }
 
-test_expect_success GIT_LFS,SHA256SUM 'setup LFS payload, committed pointer, and local bare remote' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'setup LFS payload, committed pointer, and local bare remote' '
 	sane_unset GIT_LFS_SKIP_SMUDGE GIT_LFS_SKIP_DOWNLOAD_ERRORS &&
 	asset="data and quote'\''.lfs" &&
 	git init -q source &&
@@ -98,7 +101,7 @@ test_expect_success GIT_LFS,SHA256SUM 'setup LFS payload, committed pointer, and
 	git lfs version
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'process and single-file smudge agree with ordinary checkout; filter runs once per checkout' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'process and single-file smudge agree with ordinary checkout; filter runs once per checkout' '
 	test_when_finished remove_pair &&
 	write_script record-lfs <<-\EOF &&
 	echo "$1" >>"$LFS_LOG"
@@ -138,7 +141,7 @@ test_expect_success GIT_LFS,SHA256SUM 'process and single-file smudge agree with
 	done
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'skip-smudge, fetch exclusion and absent driver keep pointer bytes' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'skip-smudge, fetch exclusion and absent driver keep pointer bytes' '
 	test_when_finished remove_pair &&
 	(
 		GIT_LFS_SKIP_SMUDGE=1 &&
@@ -162,7 +165,7 @@ test_expect_success GIT_LFS,SHA256SUM 'skip-smudge, fetch exclusion and absent d
 	remove_pair
 '
 
-test_expect_success GIT_LFS,SHA256SUM,REFLINK 'matching pointer donors share only when the recipient writes the pointer' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,REFLINK 'matching pointer donors share only when the recipient writes the pointer' '
 	GIT_LFS_SKIP_SMUDGE=1 git -C source worktree add -q --no-reflink --detach ../pointer-donor &&
 	test_when_finished "git -C source worktree remove -f ../pointer-donor" &&
 	test-tool chmtime =-60 "pointer-donor/$asset" &&
@@ -178,7 +181,7 @@ test_expect_success GIT_LFS,SHA256SUM,REFLINK 'matching pointer donors share onl
 	test_not_shared "pointer-donor/$asset" "hydrated/$asset"
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'cold caches fetch from the local bare remote before sharing' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'cold caches fetch from the local bare remote before sharing' '
 	test_when_finished remove_pair &&
 	test_when_finished "git -C source config lfs.storage \"$TRASH_DIRECTORY/warm\"" &&
 	for wt in ordinary shared
@@ -208,7 +211,7 @@ test_expect_success GIT_LFS,SHA256SUM 'cold caches fetch from the local bare rem
 	remove_pair
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'required download failures survive with an eligible hydrated donor' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'required download failures survive with an eligible hydrated donor' '
 	test_when_finished remove_pair &&
 	mkdir empty-remote &&
 	git init -q --bare empty-remote &&
@@ -230,7 +233,7 @@ test_expect_success GIT_LFS,SHA256SUM 'required download failures survive with a
 	remove_pair
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'corrupt cache behavior agrees with ordinary checkout even with a good donor' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'corrupt cache behavior agrees with ordinary checkout even with a good donor' '
 	test_when_finished remove_pair &&
 	test_when_finished "git -C source config lfs.storage \"$TRASH_DIRECTORY/warm\"" &&
 	cp -R warm corrupt &&
@@ -267,7 +270,7 @@ test_expect_success GIT_LFS,SHA256SUM 'corrupt cache behavior agrees with ordina
 	fi
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'target revision removes the LFS rule without changing pointer identity' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'target revision removes the LFS rule without changing pointer identity' '
 	test_when_finished remove_pair &&
 	git -C source branch with-lfs &&
 	git -C source worktree add -q --no-reflink --detach ../change &&
@@ -291,7 +294,7 @@ test_expect_success GIT_LFS,SHA256SUM 'target revision removes the LFS rule with
 	remove_pair
 '
 
-test_expect_success GIT_LFS,SHA256SUM,RESHARE 'maintenance shares existing hydrated bytes without invoking LFS' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'maintenance shares existing hydrated bytes without invoking LFS' '
 	git -C source worktree add -q --detach --no-reflink ../private &&
 	test_when_finished "git -C source worktree remove -f ../private" &&
 	test-tool chmtime =-60 "private/$asset" &&
@@ -305,7 +308,7 @@ test_expect_success GIT_LFS,SHA256SUM,RESHARE 'maintenance shares existing hydra
 	test_shared "source/$asset" "private/$asset"
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'LFS extension output, not the stored transformed data, is shared' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'LFS extension output, not the stored transformed data, is shared' '
 	git init -q extension &&
 	configure_lfs extension &&
 	rot13="tr A-Za-z N-ZA-Mn-za-m" &&
@@ -332,7 +335,7 @@ test_expect_success GIT_LFS,SHA256SUM 'LFS extension output, not the stored tran
 	fi
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'setup a later LFS revision and local Git remote' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'setup a later LFS revision and local Git remote' '
 	git -C source branch lifecycle-old &&
 	test-tool genrandom lifecycle 196608 >lifecycle-payload &&
 	cp lifecycle-payload "source/$asset" &&
@@ -346,7 +349,7 @@ test_expect_success GIT_LFS,SHA256SUM 'setup a later LFS revision and local Git 
 
 for operation in switch reset merge rebase pull
 do
-	test_expect_success GIT_LFS,SHA256SUM "marked worktree shares changed LFS output after git $operation" '
+	test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM "marked worktree shares changed LFS output after git $operation" '
 		test_when_finished remove_pair &&
 		for wt in ordinary shared
 		do
@@ -388,7 +391,7 @@ do
 	'
 done
 
-test_expect_success GIT_LFS,SHA256SUM,RESHARE 'enabled same-HEAD hard reset repairs LFS files written directly by git-lfs' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'enabled same-HEAD hard reset repairs LFS files written directly by git-lfs' '
 	test_when_finished "git -C source worktree remove -f ../direct" &&
 	GIT_LFS_SKIP_SMUDGE=1 git -C source worktree add -q --detach \
 		--reflink-source=. ../direct lifecycle-new &&

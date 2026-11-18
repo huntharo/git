@@ -1,5 +1,5 @@
 Verified reflink checkout
-======================================
+========================
 
 Reflink checkout creates regular files by cloning the same path in another
 worktree of the repository. Linux uses FICLONE on supported filesystems;
