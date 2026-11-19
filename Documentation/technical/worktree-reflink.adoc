@@ -16,8 +16,9 @@ physical optimization explicitly. `--dry-run`, `--porcelain`, `-z`, `--verbose`
 and `--reflink-source` support inspection and integration. See git-worktree(1)
 for the versioned output protocol and exact accounting units.
 
-Successful explicit `reset --hard` also invokes this engine with effective
-reflink enablement. Explicit false overrides the source marker. The pass
+Successful explicit `reset --hard` also invokes this engine when
+`checkout.reflink` is true or when it is unset and the worktree has a source
+marker. Explicit false overrides the source marker. The pass
 preserves ordinary reset's resulting bytes and exit status; operational
 failures warn, and unsupported cases skip. Soft/mixed reset and no-op
 checkout/switch retain their previous behavior. Initial worktree creation

@@ -110,6 +110,32 @@ test_expect_success REFLINK 'switch away and back clones again' '
 	test "$(git symbolic-ref HEAD)" = refs/heads/src
 '
 
+test_expect_success REFLINK 'unmarked worktree clones files written by switch, checkout and reset' '
+	add_wt wt-unmarked other --no-reflink --detach &&
+	test_not_shared wt-unmarked/dir/e dir/e &&
+	test_path_is_missing .git/worktrees/wt-unmarked/reflink-source &&
+
+	traced git -C wt-unmarked switch -q --detach HEAD &&
+	test_grep ! "\"category\":\"reflink" trace.json &&
+
+	git -C wt-unmarked switch -q --detach src &&
+	shared_with_source wt-unmarked a b c &&
+	test_not_shared wt-unmarked/dir/e dir/e &&
+
+	rm wt-unmarked/b &&
+	git -C wt-unmarked checkout -- b &&
+	shared_with_source wt-unmarked b &&
+
+	rm wt-unmarked/c &&
+	git -C wt-unmarked reset -q --hard &&
+	shared_with_source wt-unmarked c &&
+
+	rm wt-unmarked/a &&
+	git -C wt-unmarked -c checkout.reflink=false checkout -- a &&
+	test_not_shared wt-unmarked/a a &&
+	test_same_as_checkout wt-unmarked src
+'
+
 # unaware_git <arg>...: run git the way a version without reflink
 # checkout would: every file it writes is written the ordinary way. (Such
 # a git ignores checkout.reflink and the reflink-source file.)

@@ -195,26 +195,23 @@ static char *read_marker(struct repository *r)
 	return strbuf_detach(&sb, NULL);
 }
 
-static int configured_reflink(struct repository *r)
+static int configured_reflink(struct repository *r, int default_value)
 {
 	const char *value;
 	int v;
 
-	if (!repo_config_get_string_tmp(r, "checkout.reflink", &value)) {
-		/*
-		 * Never die halfway through a checkout over this:
-		 * a bad value just means "off".
-		 */
-		v = git_parse_maybe_bool(value);
-		if (v < 0)
-			warning(_("bad boolean config value '%s' for '%s'; "
-				  "not cloning"), value, "checkout.reflink");
-		if (v <= 0)
-			return 0;
-	} else if (!rc.marker) {
-		return 0;
-	}
-	return 1;
+	if (repo_config_get_string_tmp(r, "checkout.reflink", &value))
+		return default_value;
+
+	/*
+	 * Never die halfway through a checkout over this:
+	 * a bad value just means "off".
+	 */
+	v = git_parse_maybe_bool(value);
+	if (v < 0)
+		warning(_("bad boolean config value '%s' for '%s'; "
+			  "not cloning"), value, "checkout.reflink");
+	return v > 0;
 }
 
 static void init_reflink(struct repository *r)
@@ -240,7 +237,7 @@ static void init_reflink(struct repository *r)
 			die(_("bad value '%s' for GIT_TEST_REFLINK_CHECKOUT"), env);
 	}
 
-	if (!rc.test && !configured_reflink(r))
+	if (!rc.test && !configured_reflink(r, 1))
 		return;
 
 	rc.enabled = 1;
@@ -265,8 +262,16 @@ static void resolve_source(struct repository *r)
 	struct worktree **wts, **p, *src = NULL;
 	struct strbuf spec = STRBUF_INIT;
 	const char *config = NULL;
+	int named_source = rc.marker && *rc.marker;
 
 	rc.source_resolved = 1;
+	/*
+	 * Without a named source, the main worktree has no donor. Avoid
+	 * enumerating worktrees in the common case.
+	 */
+	if (!r->different_commondir && !named_source &&
+	    repo_config_get(r, "checkout.reflinksource") == 1)
+		goto done;
 	wts = get_worktrees_without_reading_head(r);
 
 	/*
@@ -274,7 +279,7 @@ static void resolve_source(struct repository *r)
 	 * file, checkout.reflinkSource (a worktree path or name), the main
 	 * worktree. A missing, bare or self candidate is not an error.
 	 */
-	if (rc.marker && *rc.marker) {
+	if (named_source) {
 		for (p = wts; *p && !src; p++) {
 			worktree_spec(*p, &spec);
 			if (!strcmp(spec.buf, rc.marker) && usable_source(*p))
@@ -300,10 +305,11 @@ static void resolve_source(struct repository *r)
 		rc.source_gitdir = get_worktree_git_dir(src);
 		rc.source_index_path = xstrdup(worktree_git_path(src, "index"));
 	}
-	trace2_data_string("reflink", r, "source",
-			   rc.source_path ? rc.source_path : "(none)");
 	strbuf_release(&spec);
 	free_worktrees(wts);
+done:
+	trace2_data_string("reflink", r, "source",
+			   rc.source_path ? rc.source_path : "(none)");
 }
 
 static struct index_state *source_index(struct repository *r)
@@ -732,11 +738,11 @@ struct reshare_result {
 	uintmax_t deduplicated;
 };
 
-int reflink_checkout_enabled(struct repository *r)
+int reflink_full_reshare_enabled(struct repository *r)
 {
 	if (!rc.initialized)
 		init_reflink(r);
-	return rc.repo == r && rc.enabled && configured_reflink(r);
+	return rc.repo == r && rc.enabled && configured_reflink(r, !!rc.marker);
 }
 
 static int same_file_stat(const struct stat *a, const struct stat *b)
@@ -1313,7 +1319,7 @@ done:
 
 #else
 
-int reflink_checkout_enabled(struct repository *r UNUSED)
+int reflink_full_reshare_enabled(struct repository *r UNUSED)
 {
 	return 0;
 }

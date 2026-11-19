@@ -349,34 +349,34 @@ test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'setup a later LFS revision
 
 for operation in switch reset merge rebase pull
 do
-	test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM "marked worktree shares changed LFS output after git $operation" '
+	test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM "unmarked worktree shares changed LFS output after git $operation" '
 		test_when_finished remove_pair &&
 		for wt in ordinary shared
 		do
 			case $wt in
-			ordinary) option=--no-reflink ;;
-			shared) option=--reflink-source=. ;;
+			ordinary) set -- -c checkout.reflink=false ;;
+			shared) set -- ;;
 			esac &&
-			git -C source worktree add -q --detach "$option" "../$wt" lifecycle-old &&
+			git -C source worktree add -q --detach --no-reflink "../$wt" lifecycle-old &&
 			case $operation in
 			switch)
-				git -C "$wt" switch -q --detach lifecycle-new
+				git -C "$wt" "$@" switch -q --detach lifecycle-new
 				;;
 			reset)
-				git -C "$wt" reset -q --hard lifecycle-new
+				git -C "$wt" "$@" reset -q --hard lifecycle-new
 				;;
 			merge)
-				git -C "$wt" merge -q --no-ff --no-edit lifecycle-new
+				git -C "$wt" "$@" merge -q --no-ff --no-edit lifecycle-new
 				;;
 			rebase)
 				echo side >"$wt/side" &&
 				git -C "$wt" add side &&
 				git -C "$wt" commit -qm side &&
-				git -C "$wt" rebase -q lifecycle-new &&
+				git -C "$wt" "$@" rebase -q lifecycle-new &&
 				test_path_is_file "$wt/side"
 				;;
 			pull)
-				git -C "$wt" pull -q --ff-only "$TRASH_DIRECTORY/lifecycle.git" lifecycle-new
+				git -C "$wt" "$@" pull -q --ff-only "$TRASH_DIRECTORY/lifecycle.git" lifecycle-new
 				;;
 			esac &&
 			test_cmp lifecycle-payload "$wt/$asset" &&

@@ -19,9 +19,9 @@ struct strbuf;
 struct repository;
 
 /*
- * Name of the per-worktree file (in the worktree's $GIT_DIR) that turns
- * reflink checkout on for that worktree, optionally naming its reflink
- * source.
+ * Name of the per-worktree file (in the worktree's $GIT_DIR) that
+ * enables full automatic re-sharing on hard reset and optionally names
+ * the donor worktree.
  */
 #define REFLINK_SOURCE_FILE "reflink-source"
 
@@ -69,8 +69,8 @@ struct reflink_reshare_options {
 	int quiet;
 };
 
-/* Production config/marker enablement, including the explicit false switch. */
-int reflink_checkout_enabled(struct repository *r);
+/* Full automatic re-sharing requires a marker or explicit enablement. */
+int reflink_full_reshare_enabled(struct repository *r);
 
 /*
  * Explicit physical optimization; preserves logical bytes and index entries.
