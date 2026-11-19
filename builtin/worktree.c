@@ -136,6 +136,7 @@ struct add_opts {
 	int orphan;
 	int relative_paths;
 	int reflink;
+	int reflink_by_default;
 	const char *reflink_source_spec;
 	const char *keep_locked;
 };
@@ -606,7 +607,7 @@ static int add_worktree(const char *path, const char *refname,
 	 * Remember that this worktree clones from its reflink source, so
 	 * that later checkouts in it keep sharing data blocks.
 	 */
-	if (opts->reflink > 0) {
+	if (opts->reflink > 0 || opts->reflink_by_default) {
 		strbuf_reset(&sb);
 		strbuf_addf(&sb, "%s/" REFLINK_SOURCE_FILE, sb_repo.buf);
 		write_file(sb.buf, "%s", opts->reflink_source_spec);
@@ -900,6 +901,12 @@ static int add(int ac, const char **av, const char *prefix,
 	opts.reflink = -1;
 	opts.relative_paths = use_relative_paths;
 	ac = parse_options(ac, av, prefix, options, git_worktree_add_usage, 0);
+	/*
+	 * When unset, use the new worktree's marker to enable reflinking.
+	 * Only an explicit option overrides the checkout child's config.
+	 */
+	opts.reflink_by_default = opts.reflink < 0 && !reflink_source &&
+		repo_config_get(the_repository, "checkout.reflink") == 1;
 	if (reflink_source) {
 		if (!opts.reflink)
 			die(_("options '%s' and '%s' cannot be used together"),
@@ -909,7 +916,7 @@ static int add(int ac, const char **av, const char *prefix,
 					&source_spec))
 			die(_("'%s' is not a worktree with a working tree"),
 			    reflink_source);
-	} else if (opts.reflink > 0) {
+	} else if (opts.reflink > 0 || opts.reflink_by_default) {
 		/*
 		 * The default reflink source is the main worktree. In a
 		 * bare repository with linked worktrees there is none, so
@@ -923,9 +930,12 @@ static int add(int ac, const char **av, const char *prefix,
 					       "checkout.reflinksource",
 					       &configured) &&
 		    reflink_source_spec(the_repository, NULL, NULL,
-					&source_spec))
-			warning(_("no reflink source: the main worktree is bare; "
-				  "use --reflink-source=<worktree>"));
+					&source_spec)) {
+			opts.reflink_by_default = 0;
+			if (opts.reflink > 0)
+				warning(_("no reflink source: the main worktree is bare; "
+					  "use --reflink-source=<worktree>"));
+		}
 		free_worktrees(wts);
 	}
 	opts.reflink_source_spec = source_spec.buf;

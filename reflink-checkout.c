@@ -27,7 +27,7 @@
 #include "run-command.h"
 #include "statinfo.h"
 #include "strbuf.h"
-#include "string-list.h"
+#include "symlinks.h"
 #include "tempfile.h"
 #include "trace2.h"
 #include "worktree.h"
@@ -39,6 +39,67 @@
 #include <sys/attr.h>
 #include <sys/xattr.h>
 #endif
+
+struct reshare_totals {
+	uintmax_t scanned, eligible, already_shared, reshared, skipped, failed;
+	uintmax_t allocated_before, allocated_after, private_before, private_after;
+	uintmax_t potential_private, deduplicated, allocation_unknown;
+	uintmax_t stat_clean, content_checked, content_check_bytes;
+	uintmax_t userspace_compared, native_attempts, native_range_bytes;
+	uintmax_t clone_attempts, comparison_bytes;
+};
+
+static void reshare_summary(struct repository *r,
+			    const struct reflink_reshare_options *opts,
+			    const struct reshare_totals *total)
+{
+	uintmax_t reduction = total->private_before > total->private_after ?
+		total->private_before - total->private_after : 0;
+	char term = opts->nul_termination ? '\0' : '\n';
+
+#define RESHARE_COUNT(name, value) do { \
+	trace2_data_intmax("reflink-reshare", r, name, value); \
+	if (!opts->quiet && opts->porcelain) \
+		printf("%s %"PRIuMAX"%c", name, (uintmax_t)(value), term); \
+} while (0)
+	if (!opts->quiet && opts->porcelain)
+		printf("summary%c", term);
+	RESHARE_COUNT("scanned", total->scanned);
+	RESHARE_COUNT("eligible", total->eligible);
+	RESHARE_COUNT("already-shared", total->already_shared);
+	RESHARE_COUNT("reshared", total->reshared);
+	RESHARE_COUNT("skipped", total->skipped);
+	RESHARE_COUNT("failed", total->failed);
+	RESHARE_COUNT("allocated-before", total->allocated_before);
+	RESHARE_COUNT("allocated-after", total->allocated_after);
+	RESHARE_COUNT("private-before", total->private_before);
+	RESHARE_COUNT("private-after", total->private_after);
+	RESHARE_COUNT("observed-private-reduction", reduction);
+	RESHARE_COUNT("potential-private-reduction", total->potential_private);
+	RESHARE_COUNT("deduplicated-range-bytes", total->deduplicated);
+	RESHARE_COUNT("allocation-unknown", total->allocation_unknown);
+	RESHARE_COUNT("stat-clean", total->stat_clean);
+	RESHARE_COUNT("content-checked", total->content_checked);
+	RESHARE_COUNT("content-check-bytes", total->content_check_bytes);
+	RESHARE_COUNT("userspace-compared", total->userspace_compared);
+	RESHARE_COUNT("native-attempts", total->native_attempts);
+	RESHARE_COUNT("native-range-bytes", total->native_range_bytes);
+	RESHARE_COUNT("clone-attempts", total->clone_attempts);
+	RESHARE_COUNT("comparison-bytes", total->comparison_bytes);
+#undef RESHARE_COUNT
+	if (!opts->quiet && opts->porcelain)
+		putchar(term);
+	else if (!opts->quiet)
+		printf(_("reflink: scanned %"PRIuMAX", eligible %"PRIuMAX", "
+			 "already shared %"PRIuMAX", re-shared %"PRIuMAX", "
+			 "skipped %"PRIuMAX", failed %"PRIuMAX"\n"
+			 "observed private allocation reduction: %"PRIuMAX" bytes; "
+			 "dry-run potential: %"PRIuMAX" bytes; "
+			 "unknown allocation: %"PRIuMAX" paths\n"),
+		       total->scanned, total->eligible, total->already_shared,
+		       total->reshared, total->skipped, total->failed,
+		       reduction, total->potential_private, total->allocation_unknown);
+}
 
 /*
  * A reflink source is named by its administrative directory relative
@@ -108,7 +169,6 @@ static struct {
 	char *source_gitdir;
 	char *source_index_path;
 	struct index_state *source_index;
-	unsigned char *source_converted;
 	unsigned clone_errors;	/* failed clones while none succeeded */
 	unsigned clones_ok;
 } rc;
@@ -297,106 +357,29 @@ static int donor_changed(struct index_state *src,
 }
 
 /*
- * Attribute lookup must run in the source worktree's context: its attributes,
- * config.worktree and core.attributesFile need not be ours. Use check-attr's
- * existing lookup, once per process, rather than teaching convert.c about a
- * second worktree. EOL conversions are covered by the blob size check or
- * comparison with the recipient's checkout output below.
- */
-static int read_source_attributes(struct index_state *src)
-{
-	static const char *attrs[] = { "filter", "working-tree-encoding", NULL };
-	struct child_process cmd = CHILD_PROCESS_INIT;
-	struct child_process config = CHILD_PROCESS_INIT;
-	struct strbuf input = STRBUF_INIT, output = STRBUF_INIT;
-	struct string_list filters = STRING_LIST_INIT_DUP;
-	const char *p, *end;
-	int ret = -1;
-	int status;
-
-	if (rc.source_converted)
-		return 0;
-	config.git_cmd = 1;
-	config.dir = rc.source_path;
-	config.no_stderr = 1;
-	prepare_other_repo_env(&config.env, rc.source_gitdir);
-	strvec_pushl(&config.args, "config", "--null", "--get-regexp",
-		     "^filter\\..*\\.(clean|smudge|process)$", NULL);
-	status = pipe_command(&config, NULL, 0, &output, 0, NULL, 0);
-	if (status && status != 1)
-		goto out;
-	for (char *key = output.buf; key < output.buf + output.len; ) {
-		char *value = strchr(key, '\n');
-		char *next = key + strlen(key) + 1;
-		char *dot;
-
-		if (!value)
-			goto out;
-		*value = 0;
-		dot = strrchr(key, '.');
-		if (!dot || dot <= key + strlen("filter."))
-			goto out;
-		*dot = 0;
-		string_list_insert(&filters, key + strlen("filter."));
-		key = next;
-	}
-	strbuf_reset(&output);
-	for (size_t i = 0; i < src->cache_nr; i++)
-		strbuf_add(&input, src->cache[i]->name,
-			   ce_namelen(src->cache[i]) + 1);
-	cmd.git_cmd = 1;
-	cmd.dir = rc.source_path;
-	cmd.no_stderr = 1;
-	prepare_other_repo_env(&cmd.env, rc.source_gitdir);
-	strvec_pushl(&cmd.args, "-c", "core.fsmonitor=false",
-		     "check-attr", "--stdin", "-z", NULL);
-	strvec_pushv(&cmd.args, attrs);
-	if (pipe_command(&cmd, input.buf, input.len, &output, 0, NULL, 0))
-		goto out;
-	CALLOC_ARRAY(rc.source_converted, src->cache_nr);
-	p = output.buf;
-	end = p + output.len;
-	for (size_t i = 0; i < src->cache_nr; i++) {
-		for (size_t j = 0; j < ARRAY_SIZE(attrs) - 1; j++) {
-			const char *fields[3];
-
-			for (size_t k = 0; k < ARRAY_SIZE(fields); k++) {
-				const char *nul = memchr(p, 0, end - p);
-				if (!nul)
-					goto out;
-				fields[k] = p;
-				p = nul + 1;
-			}
-			if (strcmp(fields[0], src->cache[i]->name) ||
-			    strcmp(fields[1], attrs[j]))
-				goto out;
-			if ((!j && string_list_has_string(&filters, fields[2])) ||
-			    (j && strcmp(fields[2], "unspecified") &&
-			     strcmp(fields[2], "unset")))
-				rc.source_converted[i] = 1;
-		}
-	}
-	if (p == end)
-		ret = 0;
-out:
-	if (ret)
-		FREE_AND_NULL(rc.source_converted);
-	strbuf_release(&input);
-	strbuf_release(&output);
-	string_list_clear(&filters, 0);
-	return ret;
-}
-
-/*
  * Phase one: find a file in the reflink source that, as far as its
  * index knows, holds the blob of "ce" unmodified. Returns a descriptor
  * open on it, or -1.
  */
 enum donor_use {
 	DONOR_RAW_CHECKOUT,
-	DONOR_EOL_CHECKOUT,
+	DONOR_CONVERTED_CHECKOUT,
 	DONOR_IN_PLACE,
 };
+
+/*
+ * Like checkout's check_path(), allow the worktree root prefix to resolve
+ * through symlinks, but require real directories below it. Use a fresh cache:
+ * another worktree's leading paths are not maintained by this checkout.
+ * This checks observed paths, not concurrent replacement of parent directories.
+ */
+static int has_worktree_leading_dirs(const char *path, const char *worktree)
+{
+	const char *slash = strrchr(path, '/');
+
+	invalidate_lstat_cache();
+	return slash && has_dirs_only_path(path, slash - path, strlen(worktree));
+}
 
 static int open_donor(struct repository *r, const struct cache_entry *ce,
 		      struct strbuf *donor, const struct cache_entry **source_ce,
@@ -441,18 +424,11 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 		count(TRACE2_COUNTER_ID_REFLINK_SOURCE_DIRTY);
 		return -1;
 	}
-	/* In-place dedupe imports no bytes; the kernel compares actual target data. */
-	if (use != DONOR_IN_PLACE) {
-		if (read_source_attributes(src)) {
-			rc.source_unusable = 1;
-			return -1;
-		}
-		if (rc.source_converted[pos])
-			goto dirty;
-	}
 
 	strbuf_reset(donor);
 	strbuf_addf(donor, "%s/%s", rc.source_path, ce->name);
+	if (!has_worktree_leading_dirs(donor->buf, rc.source_path))
+		goto dirty;
 	/*
 	 * Skip anything the reflink source's own index would call
 	 * modified. Look at the very file we will clone from, through a
@@ -465,9 +441,9 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 	if (fstat(fd, &st) || !S_ISREG(st.st_mode) ||
 	    donor_changed(src, sce, &st) ||
 	    st.st_size < 0 ||
-	    (use != DONOR_IN_PLACE &&
+	    (use == DONOR_RAW_CHECKOUT &&
 	     (odb_read_object_info(r->objects, &ce->oid, &size) != OBJ_BLOB ||
-	      (use == DONOR_RAW_CHECKOUT && (uintmax_t)st.st_size != size)))) {
+	      (uintmax_t)st.st_size != size))) {
 		close(fd);
 		goto dirty;
 	}
@@ -479,7 +455,7 @@ dirty:
 	return -1;
 }
 
-/* Compare only the output whose physical representation the index cannot tell us. */
+/* Compare the cloned snapshot against the recipient output. */
 static int match_output_chunk(int fd, const char *expected, size_t len)
 {
 	char actual[16384];
@@ -557,13 +533,19 @@ static int compare_clone_output(struct repository *r, const struct cache_entry *
 }
 
 static int clone_matches_output(struct repository *r, const struct cache_entry *ce,
-				const struct conv_attrs *ca, int fd)
+				const struct conv_attrs *ca, int fd,
+				const char *output, size_t output_size)
 {
 	int matches;
+	char extra;
 
 	count(TRACE2_COUNTER_ID_REFLINK_OUTPUT_COMPARED);
 	trace2_region_enter("reflink", "compare-output", r);
-	matches = compare_clone_output(r, ce, ca, fd);
+	if (output)
+		matches = match_output_chunk(fd, output, output_size) &&
+			read_in_full(fd, &extra, 1) == 0;
+	else
+		matches = compare_clone_output(r, ce, ca, fd);
 	trace2_region_leave("reflink", "compare-output", r);
 	return matches;
 }
@@ -648,6 +630,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 			   const struct conv_attrs *ca,
 			   const struct checkout *state,
 			   const char *path,
+			   const char *output, size_t output_size,
 			   struct stat *st, int *fstat_done)
 {
 	struct repository *r = state->istate && state->istate->repo ?
@@ -659,13 +642,13 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 	if (!rc.initialized)
 		init_reflink(r);
 	if (!rc.enabled || r != rc.repo || !S_ISREG(ce->ce_mode) || !ca ||
-	    ca->drv || ca->working_tree_encoding || ca->ident)
+	    (output ? !output_size : (ca->drv || ca->working_tree_encoding)))
 		return -1;
-	compare_output = !convert_to_working_tree_is_noop_ca(ca);
+	compare_output = output || !convert_to_working_tree_is_noop_ca(ca);
 
 	if (rc.test != REFLINK_TEST_CORRUPT)
 		src_fd = open_donor(r, ce, &donor, &source_ce,
-				    compare_output ? DONOR_EOL_CHECKOUT : DONOR_RAW_CHECKOUT);
+				    compare_output ? DONOR_CONVERTED_CHECKOUT : DONOR_RAW_CHECKOUT);
 	if (src_fd < 0) {
 		if (!rc.test || compare_output)
 			return -1;
@@ -716,7 +699,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 	if ((!scratch && (fstat(src_fd, st) ||
 			 donor_changed(rc.source_index, source_ce, st))) ||
 	    (scratch && rc.test == REFLINK_TEST_CORRUPT) ||
-	    (compare_output && !clone_matches_output(r, ce, ca, fd))) {
+	    !clone_matches_output(r, ce, ca, fd, output, output_size)) {
 		count(TRACE2_COUNTER_ID_REFLINK_VERIFY_FAILED);
 		close(src_fd);
 		close(fd);
@@ -747,15 +730,6 @@ struct reshare_result {
 	struct file_data_usage before, after;
 	int before_known, after_known;
 	uintmax_t deduplicated;
-};
-
-struct reshare_totals {
-	uintmax_t scanned, eligible, already_shared, reshared, skipped, failed;
-	uintmax_t allocated_before, allocated_after, private_before, private_after;
-	uintmax_t potential_private, deduplicated, allocation_unknown;
-	uintmax_t stat_clean, content_checked, content_check_bytes;
-	uintmax_t userspace_compared, native_attempts, native_range_bytes;
-	uintmax_t clone_attempts, comparison_bytes;
 };
 
 int reflink_checkout_enabled(struct repository *r)
@@ -940,58 +914,6 @@ static void reshare_path(const struct reflink_reshare_options *opts,
 	}
 }
 
-static void reshare_summary(struct repository *r,
-			    const struct reflink_reshare_options *opts,
-			    const struct reshare_totals *total)
-{
-	uintmax_t reduction = total->private_before > total->private_after ?
-		total->private_before - total->private_after : 0;
-	char term = opts->nul_termination ? '\0' : '\n';
-
-#define RESHARE_COUNT(name, value) do { \
-	trace2_data_intmax("reflink-reshare", r, name, value); \
-	if (!opts->quiet && opts->porcelain) \
-		printf("%s %"PRIuMAX"%c", name, (uintmax_t)(value), term); \
-} while (0)
-	if (!opts->quiet && opts->porcelain)
-		printf("summary%c", term);
-	RESHARE_COUNT("scanned", total->scanned);
-	RESHARE_COUNT("eligible", total->eligible);
-	RESHARE_COUNT("already-shared", total->already_shared);
-	RESHARE_COUNT("reshared", total->reshared);
-	RESHARE_COUNT("skipped", total->skipped);
-	RESHARE_COUNT("failed", total->failed);
-	RESHARE_COUNT("allocated-before", total->allocated_before);
-	RESHARE_COUNT("allocated-after", total->allocated_after);
-	RESHARE_COUNT("private-before", total->private_before);
-	RESHARE_COUNT("private-after", total->private_after);
-	RESHARE_COUNT("observed-private-reduction", reduction);
-	RESHARE_COUNT("potential-private-reduction", total->potential_private);
-	RESHARE_COUNT("deduplicated-range-bytes", total->deduplicated);
-	RESHARE_COUNT("allocation-unknown", total->allocation_unknown);
-	RESHARE_COUNT("stat-clean", total->stat_clean);
-	RESHARE_COUNT("content-checked", total->content_checked);
-	RESHARE_COUNT("content-check-bytes", total->content_check_bytes);
-	RESHARE_COUNT("userspace-compared", total->userspace_compared);
-	RESHARE_COUNT("native-attempts", total->native_attempts);
-	RESHARE_COUNT("native-range-bytes", total->native_range_bytes);
-	RESHARE_COUNT("clone-attempts", total->clone_attempts);
-	RESHARE_COUNT("comparison-bytes", total->comparison_bytes);
-#undef RESHARE_COUNT
-	if (!opts->quiet && opts->porcelain)
-		putchar(term);
-	else if (!opts->quiet)
-		printf(_("reflink: scanned %"PRIuMAX", eligible %"PRIuMAX", "
-			 "already shared %"PRIuMAX", re-shared %"PRIuMAX", "
-			 "skipped %"PRIuMAX", failed %"PRIuMAX"\n"
-			 "observed private allocation reduction: %"PRIuMAX" bytes; "
-			 "dry-run potential: %"PRIuMAX" bytes; "
-			 "unknown allocation: %"PRIuMAX" paths\n"),
-		       total->scanned, total->eligible, total->already_shared,
-		       total->reshared, total->skipped, total->failed,
-		       reduction, total->potential_private, total->allocation_unknown);
-}
-
 /* A deterministic hook for concurrent-write/path-replacement regressions. */
 static void reshare_test_hook(const struct cache_entry *ce)
 {
@@ -1056,6 +978,11 @@ int reflink_reshare_worktree(struct repository *r,
 			goto done;
 		}
 		index_locked = 1;
+		/*
+		 * A hard reset can publish the index before acquiring this
+		 * lock. Reload it so repair cannot overwrite a concurrent add.
+		 */
+		discard_index(r->index);
 	}
 #endif
 	if (repo_read_index(r) < 0) {
@@ -1103,6 +1030,10 @@ int reflink_reshare_worktree(struct repository *r,
 		}
 		strbuf_reset(&path);
 		strbuf_addf(&path, "%s/%s", r->worktree, ce->name);
+		if (!has_worktree_leading_dirs(path.buf, r->worktree)) {
+			result.reason = "target-unavailable";
+			goto record;
+		}
 		fd = open(path.buf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | noatime);
 		if (fd < 0 || fstat(fd, &before) || !S_ISREG(before.st_mode)) {
 			result.reason = "target-unavailable";
@@ -1387,17 +1318,21 @@ int reflink_checkout_enabled(struct repository *r UNUSED)
 	return 0;
 }
 
-int reflink_reshare_worktree(struct repository *r UNUSED,
+int reflink_reshare_worktree(struct repository *r,
 			     const struct reflink_reshare_options *opts)
 {
+	struct reshare_totals total = { 0 };
 	char term = opts->nul_termination ? '\0' : '\n';
 
-	if (!opts->quiet && opts->porcelain)
-		printf("reflink 1%cbackend unsupported%c%csummary%cscanned 0%c"
-		       "eligible 0%calready-shared 0%creshared 0%cskipped 0%cfailed 0%c%c",
-		       term, term, term, term, term, term, term, term, term, term, term);
-	else if (!opts->quiet)
+	if (!opts->quiet && opts->porcelain) {
+		printf("reflink 1%cworktree ", term);
+		write_name_quoted(r->worktree, stdout, term);
+		printf("dry-run %d%cbackend unsupported%c%c", !!opts->dry_run,
+		       term, term, term);
+		reshare_summary(r, opts, &total);
+	} else if (!opts->quiet) {
 		printf(_("reflink: safe in-place deduplication is unsupported\n"));
+	}
 	return 0;
 }
 
@@ -1405,6 +1340,7 @@ int reflink_checkout_entry(const struct cache_entry *ce UNUSED,
 			   const struct conv_attrs *ca UNUSED,
 			   const struct checkout *state UNUSED,
 			   const char *path UNUSED,
+			   const char *output UNUSED, size_t output_size UNUSED,
 			   struct stat *st UNUSED, int *fstat_done UNUSED)
 {
 	/* clone_fd_to_file() is not implemented on this platform */

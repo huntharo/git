@@ -33,6 +33,11 @@ Attributes-only EOL changes, `git add` and ordinary refresh can leave a clean
 file holding a historical LF, CRLF or mixed representation. Re-sharing uses
 the target's actual physical representation; it does not reconvert it.
 
+APFS takes the index lock and reloads the current index before scanning so
+a hard reset's follow-up repair cannot overwrite a concurrent completed add.
+Stat-clean LFS paths can share if their current bytes match a donor, whether
+those bytes are hydrated data or pointers. Re-sharing does not run LFS.
+
 The scan skips absent/nonregular/sparse/unmerged/intent-to-add entries and
 hardlinked targets. Allocation metadata identifies fully shared files before
 any hash, conversion, clone or byte comparison. For private candidates,

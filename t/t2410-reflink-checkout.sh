@@ -131,20 +131,40 @@ test_expect_success 'worktree add --reflink writes an empty reflink-source file'
 	test_must_be_empty .git/worktrees/wt-marker/reflink-source
 '
 
-test_expect_success 'no cloning without --reflink or checkout.reflink' '
-	test_when_finished "remove_wt wt-plain" &&
+test_expect_success 'plain worktree add matches an ordinary checkout' '
+	test_when_finished "remove_wt wt-default-output" &&
+	git worktree add wt-default-output &&
+	test_same_as_checkout wt-default-output main
+'
+
+test_expect_success REFLINK 'plain worktree add shares blocks and enables later cloning' '
+	test_when_finished "remove_wt wt-default" &&
+	git worktree add wt-default &&
+	test_same_as_checkout wt-default main &&
+	test_shared big1 wt-default/big1 &&
+	test_path_is_file .git/worktrees/wt-default/reflink-source &&
+	rm wt-default/big1 &&
+	git -C wt-default checkout -- big1 &&
+	test_shared big1 wt-default/big1
+'
+
+test_expect_success 'checkout.reflink=false opts out of default sharing' '
+	test_when_finished "remove_wt wt-disabled" &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
-		git worktree add -q --detach wt-plain main &&
-	test_path_is_missing .git/worktrees/wt-plain/reflink-source &&
+		git -c checkout.reflink=false worktree add wt-disabled &&
+	test_path_is_missing .git/worktrees/wt-disabled/reflink-source &&
 	test_grep ! "\"category\":\"reflink\"" trace.json &&
-	test_not_shared big1 wt-plain/big1 &&
-	rm wt-plain/big1 &&
+	test_not_shared big1 wt-disabled/big1 &&
+	test_same_as_checkout wt-disabled main &&
+	# The command-line config is no longer in effect. This unmarked
+	# worktree still uses an ordinary reset, without a repair scan.
+	rm wt-disabled/big1 &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
-		git -C wt-plain checkout -- big1 &&
-	test_reflink_count cloned 0 trace.json &&
-	test_not_shared big1 wt-plain/big1
+		git -C wt-disabled reset -q --hard &&
+	test_grep ! "\"category\":\"reflink" trace.json &&
+	test_not_shared big1 wt-disabled/big1
 '
 
 test_expect_success REFLINK 'checkout.reflink=true enables cloning' '
@@ -739,7 +759,7 @@ test_expect_success REFLINK 'GIT_TEST_REFLINK_CHECKOUT=corrupt: every clone is r
 	test_when_finished "remove_wt wt-corrupt2" &&
 	rm -f trace.json &&
 	GIT_TEST_REFLINK_CHECKOUT=corrupt GIT_TRACE2_EVENT="$TRACE_JSON" \
-		git worktree add -q --detach wt-corrupt2 main &&
+		git worktree add -q --detach --no-reflink wt-corrupt2 main &&
 	test_reflink_count cloned 0 trace.json &&
 	# test mode tries every regular file, the empty one too
 	test_reflink_count scratch-donor $((NONEMPTY + 1)) trace.json &&
