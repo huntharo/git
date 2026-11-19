@@ -395,11 +395,22 @@ test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'enabled same-HEAD 
 	test_when_finished "git -C source worktree remove -f ../direct" &&
 	GIT_LFS_SKIP_SMUDGE=1 git -C source worktree add -q --detach \
 		--reflink-source=. ../direct lifecycle-new &&
-	git -C direct lfs checkout &&
+	# LFS itself can clone from its cache. Use a disposable cache with its
+	# own data blocks so removing it leaves a genuinely private worktree file.
+	oid=$(sha256 lifecycle-payload) &&
+	object_dir=direct-cache/objects/$(printf "%s\n" "$oid" | sed "s|^\(..\)\(..\).*|\1/\2|") &&
+	test_when_finished "rm -rf direct-cache" &&
+	mkdir -p "$object_dir" &&
+	dd if=lifecycle-payload of="$object_dir/$oid" bs=64k &&
+	git -C direct -c "lfs.storage=$TRASH_DIRECTORY/direct-cache" lfs checkout &&
+	rm -rf direct-cache &&
 	test_cmp lifecycle-payload "direct/$asset" &&
 	test_not_shared "source/$asset" "direct/$asset" &&
 	test-tool chmtime =-60 "direct/$asset" &&
 	git -C direct update-index --refresh &&
+	test-tool reflink private-bytes "direct/$asset" >before.usage &&
+	read private allocated files fully_shared <before.usage &&
+	test "$private" -gt 0 &&
 	git -C direct reset -q --hard HEAD &&
 	test_cmp lifecycle-payload "direct/$asset" &&
 	test_shared "source/$asset" "direct/$asset" &&
