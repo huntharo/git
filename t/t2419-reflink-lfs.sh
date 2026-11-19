@@ -325,7 +325,7 @@ test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,REFLINK 'verified alternate
 	GIT_LFS_SKIP_SMUDGE=1 git -C lfs-alternates/main -c checkout.reflink=false \
 		checkout -- file.lfs &&
 	test_cmp pointer lfs-alternates/main/file.lfs &&
-	GIT_LFS_SKIP_SMUDGE=1 reflink_stable_source lfs-alternates/main &&
+	test_env GIT_LFS_SKIP_SMUDGE=1 reflink_stable_source lfs-alternates/main &&
 	>calls &&
 	rm -f trace.json &&
 	LFS_LOG="$TRASH_DIRECTORY/calls" GIT_TRACE2_EVENT="$TRACE_JSON" \
