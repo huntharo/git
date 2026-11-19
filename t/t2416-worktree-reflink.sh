@@ -197,7 +197,7 @@ do
 
 done
 
-test_expect_success 'unsupported backend explicitly reports safe skips' '
+test_expect_success 'unavailable re-sharing explicitly reports safe skips' '
 	if test_have_prereq RESHARE
 	then
 		return 0
@@ -208,12 +208,23 @@ test_expect_success 'unsupported backend explicitly reports safe skips' '
 	git -C target worktree reflink --porcelain >out &&
 	metadata >after.stat &&
 	test_cmp before.stat after.stat &&
-	test_grep "^backend unsupported$" out &&
-	if test_have_prereq REFLINK_BUILD
-	then test_grep "^reason unsupported-safe-dedupe$" out
-	else test_field scanned 0 out
-	fi &&
+	case $(sed -n "s/^backend //p" out) in
+	unsupported)
+		if test_have_prereq REFLINK_BUILD
+		then test_grep "^reason unsupported-safe-dedupe$" out
+		else test_field scanned 0 out
+		fi
+		;;
+	native-dedupe)
+		# Some overlay filesystems reject dedupe despite the filesystem type.
+		test_grep "^reason \(allocation-unknown\|native-dedupe-failed\)$" out
+		;;
+	*) return 1 ;;
+	esac &&
+	test_field failed 0 out &&
 	test_field reshared 0 out &&
+	test_cmp source/plain target/plain &&
+	test_cmp source/crlf target/crlf &&
 	test_not_shared source/plain target/plain
 '
 
