@@ -200,7 +200,7 @@ static int configured_reflink(struct repository *r, int default_value)
 	const char *value;
 	int v;
 
-	if (repo_config_get_string_tmp(r, "checkout.reflink", &value))
+	if (repo_config_get_value(r, "checkout.reflink", &value))
 		return default_value;
 
 	/*
@@ -265,12 +265,14 @@ static void resolve_source(struct repository *r)
 	int named_source = rc.marker && *rc.marker;
 
 	rc.source_resolved = 1;
+	if (repo_config_get_value(r, "checkout.reflinksource", &config) ||
+	    (config && !*config))
+		config = NULL;
 	/*
 	 * Without a named source, the main worktree has no donor. Avoid
 	 * enumerating worktrees in the common case.
 	 */
-	if (!r->different_commondir && !named_source &&
-	    repo_config_get(r, "checkout.reflinksource") == 1)
+	if (!r->different_commondir && !named_source && !config)
 		goto done;
 	wts = get_worktrees_without_reading_head(r);
 
@@ -286,8 +288,7 @@ static void resolve_source(struct repository *r)
 				src = *p;
 		}
 	}
-	if (!src && !repo_config_get_string_tmp(r, "checkout.reflinksource",
-						&config)) {
+	if (!src && config) {
 		struct worktree *wt = find_worktree(wts, NULL, config);
 		if (usable_source(wt))
 			src = wt;
@@ -1003,7 +1004,7 @@ int reflink_maybe_reshare_worktree(struct repository *r)
 		size_t pos = (uintmax_t)sampled * (index->cache_nr - 1) /
 			(sample_size - 1);
 		const struct cache_entry *ce = index->cache[pos], *source_ce;
-		struct file_data_usage usage;
+		enum file_data_sharing sharing;
 		struct stat target, source;
 		int fd;
 
@@ -1013,16 +1014,11 @@ int reflink_maybe_reshare_worktree(struct repository *r)
 		fd = open_reshare_target(r, ce, &path, &target);
 		if (fd < 0)
 			continue;
-		if (get_file_data_usage(fd, &usage)
-#ifndef __APPLE__
-		    || !can_dedupe_file_data(fd)
-#endif
-		   )
-			usage.allocated = 0;
+		sharing = get_file_data_sharing(fd);
 		close(fd);
-		if (!usage.allocated)
+		if (sharing == FILE_DATA_UNKNOWN)
 			continue;
-		if (usage.private_bytes < usage.allocated) {
+		if (sharing == FILE_DATA_SHARED) {
 			shared = 1;
 			break;
 		}

@@ -465,11 +465,18 @@ do
 	test_expect_success RESHARE "$operation repairs the full tree when the sample finds matching private files" '
 		probe_target &&
 		test_not_shared probe-source/file-05 probe-target/file-05 &&
+		mkdir -p probe-hooks &&
+		write_script probe-hooks/post-checkout <<-\EOF &&
+		ls -i file-05 >"$HOOK_INODE"
+		EOF
 		rm -f trace.json &&
-		GIT_TRACE2_EVENT="$TRACE_JSON" \
-			git -C probe-target "$operation" -q --detach HEAD &&
+		HOOK_INODE="$TRASH_DIRECTORY/hook-inode" GIT_TRACE2_EVENT="$TRACE_JSON" \
+			git -C probe-target -c core.hooksPath="$TRASH_DIRECTORY/probe-hooks" \
+			"$operation" -q --detach HEAD &&
 		# file-05 lies between sampled index positions.
 		test_shared probe-source/file-05 probe-target/file-05 &&
+		(cd probe-target && ls -i file-05) >actual-inode &&
+		test_cmp actual-inode hook-inode &&
 		test_grep "\"category\":\"reflink-probe\".*\"key\":\"sampled\",\"value\":\"50\"" trace.json &&
 		test_grep "\"category\":\"reflink-reshare\".*\"key\":\"scanned\",\"value\":\"60\"" trace.json &&
 		git -C probe-target status --porcelain >status &&

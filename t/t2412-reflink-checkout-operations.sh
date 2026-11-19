@@ -137,6 +137,31 @@ test_expect_success REFLINK 'unmarked worktree clones files written by switch, c
 	test_same_as_checkout wt-unmarked src
 '
 
+test_expect_success REFLINK_BUILD 'valueless checkout.reflink enables checkout and worktree add' '
+	add_wt wt-valueless other --no-reflink --detach &&
+	test_when_finished "git config --unset-all checkout.reflink" &&
+	printf "\n[checkout]\n\treflink\n" >>.git/config &&
+	git -C wt-valueless switch -q --detach src &&
+	add_wt wt-bool-add src --reflink --detach &&
+	if test_have_prereq REFLINK
+	then
+		shared_with_source wt-valueless a &&
+		shared_with_source wt-bool-add a
+	fi
+'
+
+test_expect_success REFLINK_BUILD 'valueless checkout.reflinkSource falls back to the main worktree' '
+	add_wt wt-valueless-source other --no-reflink --detach &&
+	test_when_finished "git config --unset-all checkout.reflinkSource" &&
+	printf "\n[checkout]\n\treflinkSource\n" >>.git/config &&
+	git switch -q src &&
+	git -C wt-valueless-source switch -q --detach src &&
+	if test_have_prereq REFLINK
+	then
+		shared_with_source wt-valueless-source a
+	fi
+'
+
 # unaware_git <arg>...: run git the way a version without reflink
 # checkout would: every file it writes is written the ordinary way. (Such
 # a git ignores checkout.reflink and the reflink-source file.)
