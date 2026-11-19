@@ -69,6 +69,7 @@ jobs:
               python3 /src/contrib/pwrgit-runtime/smoke.py "/out/relocated runtime" --test-tool /out/build/source/t/helper/test-tool --root /tests --require-sharing --report "/out/sharing-$1.json"
               cd /out/build/source/t
               for suite in t241[0-7]-*.sh; do ./$suite --root=/tests; done
+              PATH="/out/relocated runtime/bin:$PATH" GIT_TEST_REQUIRE_PREREQ="GIT_LFS_FILE_TRANSPORT SHA256SUM" ./t2419-reflink-lfs.sh --root=/tests
             ' bash "$filesystem"
             sudo umount "$RUNNER_TEMP/$filesystem"
           done
@@ -116,11 +117,11 @@ jobs:
           softwareupdate --install-rosetta --agree-to-license
           arch -x86_64 "$RUNNER_TEMP/universal/bin/git" version --build-options
           arch -x86_64 "$RUNNER_TEMP/universal/bin/git-lfs" version
-          python3 contrib/pwrgit-runtime/test-macos.py --arch x64 --source "$RUNNER_TEMP/x64/source" --output "$RUNNER_TEMP/source-tests/x64"
+          python3 contrib/pwrgit-runtime/test-macos.py --arch x64 --source "$RUNNER_TEMP/x64/source" --lfs-bin "$RUNNER_TEMP/x64/stage/pwrgit/bin" --output "$RUNNER_TEMP/source-tests/x64"
       - name: Focused ARM64 source regressions
         run: |
           set -euo pipefail
-          python3 contrib/pwrgit-runtime/test-macos.py --arch arm64 --source "$RUNNER_TEMP/arm64/source" --output "$RUNNER_TEMP/source-tests/arm64"
+          python3 contrib/pwrgit-runtime/test-macos.py --arch arm64 --source "$RUNNER_TEMP/arm64/source" --lfs-bin "$RUNNER_TEMP/arm64/stage/pwrgit/bin" --output "$RUNNER_TEMP/source-tests/arm64"
       - name: Preserve macOS source regression conditions and diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

@@ -45,7 +45,7 @@ for path in sorted(a.inputs.rglob('*.tar.gz')):
             inventory_sha256 = hashlib.sha256(stream.read()).hexdigest()
     if a.tag != 'v' + m['version'] or m['primary_sha1'] != 'SHA1_DC':
         raise ValueError('Release tag, version or primary hash protection mismatch')
-    for field in ('version', 'source_revision', 'source_pull_requests'):
+    for field in ('version', 'source_revision', 'upstream_base', 'source_pull_requests'):
         if field in catalog and catalog[field] != m[field]:
             raise ValueError(f'Release source set differs: {field}')
         catalog[field] = m[field]
@@ -76,22 +76,25 @@ if 10 in catalog['source_pull_requests']:
     feature_notes += 'APFS clone repair batches mode and timestamps in one descriptor operation; the experimental allocation-query replacement is not applied.\n'
 if 11 in catalog['source_pull_requests']:
     feature_notes += 'APFS re-sharing leaves kernel-managed com.apple.provenance to macOS; all other xattrs, including quarantine, still require exact equality.\n'
+if 31 in catalog['source_pull_requests']:
+    feature_notes += (
+        'Verified copy-on-write sharing now supports Git LFS checkout output. Git runs its normal filters and shares a donor only when its bytes match the recipient output.\n'
+        'This covers ordinary Git checkout, switch, reset, merge, rebase and pull where a matching donor exists. Direct git lfs checkout/pull writes can be re-shared afterward.\n'
+    )
 (a.output / 'RELEASE-NOTES.txt').write_text(
     f'Custom Git {catalog["version"]}\n\nExact C source: {catalog["source_revision"]}\n'
-    'This is a custom build of the 2.56 development line, not a final upstream 2.56 release.\n'
+    f'Upstream base: Git {catalog["upstream_base"]["tag"]} ({catalog["upstream_base"]["revision"]}).\n'
     'Included source PRs: ' + ', '.join(f'#{n}' for n in catalog['source_pull_requests']) + '.\n'
     'Includes conversion-aware checkout, git worktree reflink, and enabled hard-reset re-sharing.\n'
     + feature_notes +
     'Runtime config includes /etc/gitconfig and retains the Azure DevOps useHttpPath rule.\n'
     'The runtime does not force checkout.reflink; apps and normal Git configuration control enablement.\n'
-    'Existing donor/stat trust remains; this does not acquire PR #1 donor verification.\n'
     'APFS replacement changes inode/ctime. Do not use writable mmap or retain writable descriptors across replacement; ordinary writes after the last check can also race rename. Read-only object/pack mappings are unaffected.\n'
     'Git LFS 3.7.1, helpers, templates, notices, sources, symbols and checksums are included.\n'
     'macOS: final universal executables signed by PwrDrvr LLC (T44CNHC4UH) and accepted by Apple notarization.\n'
     'Linux: x64/ARM64, bundled non-glibc libraries and their exact source inputs; glibc 2.35 baseline.\n'
     'Linux includes the checksum-pinned Mozilla CA bundle at ssl/cacert.pem (MPL-2.0), matching Dugite; macOS keeps its native trust behavior.\n'
     'The macOS 13 deployment target is not an older-OS execution guarantee. See the explicit tested state in the manifest and attached reports.\n'
-    'Known Git/APFS stat-trust and writable-mmap blind spots still apply. No arbitrary concurrent-writer guarantee is made.\n'
     'Both apps pin runtime-manifest.json and preserve the same macOS executable bytes/signatures. Each app still needs its own notarization.\n'
     f'Build and validation: {a.run_url}\n')
 (a.output / 'SHA256SUMS').write_text(''.join(f'{sha256(p)}  {p.name}\n' for p in sorted(a.output.iterdir()) if p.is_file()))
