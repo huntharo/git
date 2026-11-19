@@ -19,7 +19,10 @@ For private candidates, ordinary stat/racy checks establish dirty eligibility.
 Known mode/type/size changes skip immediately. Ambiguous target stat requires
 ordinary content verification; external-filter/encoding ambiguity skips. A
 candidate donor has the same index object ID and passes descriptor stat/racy
-checks. Actual data equality is established by the selected backend.
+checks. Actual data equality is established by the selected backend. This can
+share stat-clean LFS paths when both files are hydrated to identical bytes or
+both contain the same pointer. Maintenance does not run LFS or reinterpret the
+indexed pointer as a recipe for replacing target bytes.
 
 Linux compare-and-share
 -----------------------

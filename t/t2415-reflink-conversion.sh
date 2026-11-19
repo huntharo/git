@@ -321,4 +321,22 @@ do
 	done
 done
 
+test_lazy_prereq PYTHON3 'command -v python3'
+
+test_expect_success MACOS,REFLINK,PYTHON3 'mapped donor edits cannot escape snapshot verification' '
+	test_when_finished "rm -rf donor ordinary actual filtered" &&
+	git init -q donor &&
+	rm -f trace.json &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" \
+		python3 "$TEST_DIRECTORY/lib-reflink/mapped-donor.py" >mapped &&
+	if grep "^stat-invisible$" mapped
+	then
+		test_reflink_count verify-failed 2 trace.json
+	fi &&
+	test_not_shared donor/data actual/data &&
+	test_not_shared donor/data filtered/data &&
+	git -C actual status --porcelain >status &&
+	test_must_be_empty status
+'
+
 test_done
