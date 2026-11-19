@@ -69,16 +69,19 @@ The isolated contribution branches and earlier immutable releases are retained.
 
 `2.56.1-dev-pwrgit.1` starts a new downstream series on upstream Git
 `v2.56.1`. It replays the shipped reflink stack (PRs #2, #3, #5, #10 and
-#11) and the verified LFS backport (PR #31). The build lock records both
-the upstream release commit and the frozen downstream source. The version
-keeps the `-dev-pwrgit` channel spelling used by both app consumers.
+#11), the verified LFS backport (PR #31), and default verified reflinks
+with sampled repair after branch checkout and switch (PR #32). The build
+lock records both the upstream release commit and the frozen downstream
+source. The version keeps the `-dev-pwrgit` channel spelling used by both
+app consumers.
 
 Git LFS was already bundled. The change allows ordinary Git checkout,
 switch, hard reset, merge, rebase and pull to share LFS checkout bytes:
 Git runs the normal filter and compares the resulting bytes with a clone
 of the donor before publishing it. Direct writes by `git lfs checkout`
 or `git lfs pull` can be shared afterward through worktree re-sharing.
-Draft PR #32, which changes default enablement, is outside this freeze.
+The bundled system config sets no `checkout.reflink` value. Set
+`checkout.reflink=false` to opt out of the new default.
 
 == Fork branches and upstream submissions
 
@@ -165,7 +168,9 @@ are uploaded even when a suite fails.
 
 All release platforms run t2419 with the packaged Git LFS executable. Its
 file transport and SHA-256 prerequisites are required. The Linux runner also
-runs it on the mounted XFS and btrfs images to verify actual sharing.
+runs it on the mounted XFS and Btrfs images to verify actual sharing. The Btrfs
+test image uses `max_inline=0` so that Git LFS pointers have data extents the
+tests can compare.
 
 The macOS 26 ordinary-volume failure changed only atime in nine cases. A
 `noatime` suite pass does not establish an unchanged-atime guarantee on an

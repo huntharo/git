@@ -3,13 +3,13 @@
   "version": "2.56.1-dev-pwrgit.1",
   "source": {
     "repository": "https://github.com/huntharo/git",
-    "ref": "refs/tags/pwrgit-source/2.56.1-dev-pwrgit.1-ci.1",
-    "revision": "b46a7f6290d716e397eb801f483162e7bca1f924",
+    "ref": "refs/tags/pwrgit-source/2.56.1-dev-pwrgit.1-ci.4",
+    "revision": "2bcfe0dca7f5596f861047cf041ae45d157b982a",
     "upstream_base": {
       "tag": "v2.56.1",
       "revision": "03b41523c576f26ad34085378717a0c1b287470f"
     },
-    "pull_requests": [2, 3, 5, 10, 11, 31]
+    "pull_requests": [2, 3, 5, 10, 11, 31, 32]
   },
   "recipe_reference": {
     "repository": "https://github.com/desktop/dugite-native",

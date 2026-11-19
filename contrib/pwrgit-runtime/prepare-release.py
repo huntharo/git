@@ -81,6 +81,10 @@ if 31 in catalog['source_pull_requests']:
         'Verified copy-on-write sharing now supports Git LFS checkout output. Git runs its normal filters and shares a donor only when its bytes match the recipient output.\n'
         'This covers ordinary Git checkout, switch, reset, merge, rebase and pull where a matching donor exists. Direct git lfs checkout/pull writes can be re-shared afterward.\n'
     )
+if 32 in catalog['source_pull_requests']:
+    feature_notes += (
+        'Verified reflinks are enabled by default. Branch checkout and switch sample the worktree and can re-share matching files. Set checkout.reflink=false to opt out.\n'
+    )
 (a.output / 'RELEASE-NOTES.txt').write_text(
     f'Custom Git {catalog["version"]}\n\nExact C source: {catalog["source_revision"]}\n'
     f'Upstream base: Git {catalog["upstream_base"]["tag"]} ({catalog["upstream_base"]["revision"]}).\n'
@@ -88,7 +92,7 @@ if 31 in catalog['source_pull_requests']:
     'Includes conversion-aware checkout, git worktree reflink, and enabled hard-reset re-sharing.\n'
     + feature_notes +
     'Runtime config includes /etc/gitconfig and retains the Azure DevOps useHttpPath rule.\n'
-    'The runtime does not force checkout.reflink; apps and normal Git configuration control enablement.\n'
+    'The bundled system config sets no checkout.reflink value.\n'
     'APFS replacement changes inode/ctime. Do not use writable mmap or retain writable descriptors across replacement; ordinary writes after the last check can also race rename. Read-only object/pack mappings are unaffected.\n'
     'Git LFS 3.7.1, helpers, templates, notices, sources, symbols and checksums are included.\n'
     'macOS: final universal executables signed by PwrDrvr LLC (T44CNHC4UH) and accepted by Apple notarization.\n'
