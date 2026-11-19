@@ -926,9 +926,9 @@ static int add(int ac, const char **av, const char *prefix,
 		const char *configured;
 
 		if (wts[0]->is_bare &&
-		    repo_config_get_string_tmp(the_repository,
-					       "checkout.reflinksource",
-					       &configured) &&
+		    (repo_config_get_value(the_repository,
+					   "checkout.reflinksource", &configured) ||
+		     !configured || !*configured) &&
 		    reflink_source_spec(the_repository, NULL, NULL,
 					&source_spec)) {
 			opts.reflink_by_default = 0;
@@ -947,8 +947,7 @@ static int add(int ac, const char **av, const char *prefix,
 		 * must not stop us, it only disables later cloning (with a
 		 * warning when that happens).
 		 */
-		if (!repo_config_get_string_tmp(the_repository, "checkout.reflink",
-						&value) &&
+		if (!repo_config_get_value(the_repository, "checkout.reflink", &value) &&
 		    !git_parse_maybe_bool(value))
 			warning(_("checkout.reflink is false; later checkouts in "
 				  "the new worktree will not clone files"));

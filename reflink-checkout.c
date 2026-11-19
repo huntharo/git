@@ -195,26 +195,23 @@ static char *read_marker(struct repository *r)
 	return strbuf_detach(&sb, NULL);
 }
 
-static int configured_reflink(struct repository *r)
+static int configured_reflink(struct repository *r, int default_value)
 {
 	const char *value;
 	int v;
 
-	if (!repo_config_get_string_tmp(r, "checkout.reflink", &value)) {
-		/*
-		 * Never die halfway through a checkout over this:
-		 * a bad value just means "off".
-		 */
-		v = git_parse_maybe_bool(value);
-		if (v < 0)
-			warning(_("bad boolean config value '%s' for '%s'; "
-				  "not cloning"), value, "checkout.reflink");
-		if (v <= 0)
-			return 0;
-	} else if (!rc.marker) {
-		return 0;
-	}
-	return 1;
+	if (repo_config_get_value(r, "checkout.reflink", &value))
+		return default_value;
+
+	/*
+	 * Never die halfway through a checkout over this:
+	 * a bad value just means "off".
+	 */
+	v = git_parse_maybe_bool(value);
+	if (v < 0)
+		warning(_("bad boolean config value '%s' for '%s'; "
+			  "not cloning"), value, "checkout.reflink");
+	return v > 0;
 }
 
 static void init_reflink(struct repository *r)
@@ -240,7 +237,7 @@ static void init_reflink(struct repository *r)
 			die(_("bad value '%s' for GIT_TEST_REFLINK_CHECKOUT"), env);
 	}
 
-	if (!rc.test && !configured_reflink(r))
+	if (!rc.test && !configured_reflink(r, 1))
 		return;
 
 	rc.enabled = 1;
@@ -265,8 +262,18 @@ static void resolve_source(struct repository *r)
 	struct worktree **wts, **p, *src = NULL;
 	struct strbuf spec = STRBUF_INIT;
 	const char *config = NULL;
+	int named_source = rc.marker && *rc.marker;
 
 	rc.source_resolved = 1;
+	if (repo_config_get_value(r, "checkout.reflinksource", &config) ||
+	    (config && !*config))
+		config = NULL;
+	/*
+	 * Without a named source, the main worktree has no donor. Avoid
+	 * enumerating worktrees in the common case.
+	 */
+	if (!r->different_commondir && !named_source && !config)
+		goto done;
 	wts = get_worktrees_without_reading_head(r);
 
 	/*
@@ -274,15 +281,14 @@ static void resolve_source(struct repository *r)
 	 * file, checkout.reflinkSource (a worktree path or name), the main
 	 * worktree. A missing, bare or self candidate is not an error.
 	 */
-	if (rc.marker && *rc.marker) {
+	if (named_source) {
 		for (p = wts; *p && !src; p++) {
 			worktree_spec(*p, &spec);
 			if (!strcmp(spec.buf, rc.marker) && usable_source(*p))
 				src = *p;
 		}
 	}
-	if (!src && !repo_config_get_string_tmp(r, "checkout.reflinksource",
-						&config)) {
+	if (!src && config) {
 		struct worktree *wt = find_worktree(wts, NULL, config);
 		if (usable_source(wt))
 			src = wt;
@@ -300,10 +306,11 @@ static void resolve_source(struct repository *r)
 		rc.source_gitdir = get_worktree_git_dir(src);
 		rc.source_index_path = xstrdup(worktree_git_path(src, "index"));
 	}
-	trace2_data_string("reflink", r, "source",
-			   rc.source_path ? rc.source_path : "(none)");
 	strbuf_release(&spec);
 	free_worktrees(wts);
+done:
+	trace2_data_string("reflink", r, "source",
+			   rc.source_path ? rc.source_path : "(none)");
 }
 
 static struct index_state *source_index(struct repository *r)
@@ -732,11 +739,11 @@ struct reshare_result {
 	uintmax_t deduplicated;
 };
 
-int reflink_checkout_enabled(struct repository *r)
+int reflink_full_reshare_enabled(struct repository *r)
 {
 	if (!rc.initialized)
 		init_reflink(r);
-	return rc.repo == r && rc.enabled && configured_reflink(r);
+	return rc.repo == r && rc.enabled && configured_reflink(r, !!rc.marker);
 }
 
 static int same_file_stat(const struct stat *a, const struct stat *b)
@@ -929,6 +936,122 @@ static void reshare_test_hook(const struct cache_entry *ce)
 		die("GIT_TEST_REFLINK_RESHARE_HOOK failed");
 }
 
+static int reshare_index_entry(const struct cache_entry *ce)
+{
+	return !ce_stage(ce) && S_ISREG(ce->ce_mode) &&
+		!(ce->ce_flags & (CE_SKIP_WORKTREE | CE_INTENT_TO_ADD | CE_REMOVE));
+}
+
+static int reshare_open_flags(void)
+{
+	int flags = O_NOFOLLOW | O_NONBLOCK;
+
+#if defined(__linux__) && defined(O_NOATIME)
+	flags |= O_NOATIME;
+#endif
+	return flags;
+}
+
+static int open_reshare_target(struct repository *r, const struct cache_entry *ce,
+			       struct strbuf *path, struct stat *st)
+{
+	int fd;
+
+	strbuf_reset(path);
+	strbuf_addf(path, "%s/%s", r->worktree, ce->name);
+	if (!has_worktree_leading_dirs(path->buf, r->worktree))
+		return -1;
+	fd = open(path->buf, O_RDONLY | reshare_open_flags());
+	if (fd >= 0 && (fstat(fd, st) || !S_ISREG(st->st_mode))) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+static int reshare_target_stat_changed(struct index_state *index,
+				       const struct cache_entry *ce, struct stat *st)
+{
+	return ie_match_stat(index, ce, st,
+		CE_MATCH_IGNORE_VALID | CE_MATCH_IGNORE_SKIP_WORKTREE |
+		CE_MATCH_IGNORE_FSMONITOR | CE_MATCH_RACY_IS_DIRTY);
+}
+
+int reflink_maybe_reshare_worktree(struct repository *r)
+{
+	enum { SAMPLE_LIMIT = 50, MIN_PRIVATE_MATCHES = 5 };
+	struct reflink_reshare_options opts = { .quiet = 1 };
+	struct index_state *index = r->index;
+	struct strbuf path = STRBUF_INIT, donor = STRBUF_INIT;
+	unsigned int sample_size, sampled = 0, private_matches = 0;
+	int shared = 0;
+
+	if (!index || index->cache_nr < MIN_PRIVATE_MATCHES)
+		return 0;
+	if (!rc.initialized)
+		init_reflink(r);
+	if (!rc.enabled || rc.repo != r || rc.test)
+		return 0;
+	if (!rc.source_resolved)
+		resolve_source(r);
+	if (!rc.source_path || rc.source_unusable)
+		return 0;
+
+	sample_size = index->cache_nr < SAMPLE_LIMIT ? index->cache_nr : SAMPLE_LIMIT;
+	rc.resharing = 1;
+	while (sampled < sample_size) {
+		/* Spread the sample over the index, including both ends. */
+		size_t pos = (uintmax_t)sampled * (index->cache_nr - 1) /
+			(sample_size - 1);
+		const struct cache_entry *ce = index->cache[pos], *source_ce;
+		enum file_data_sharing sharing;
+		struct stat target, source;
+		int fd;
+
+		sampled++;
+		if (!reshare_index_entry(ce))
+			continue;
+		fd = open_reshare_target(r, ce, &path, &target);
+		if (fd < 0)
+			continue;
+		sharing = get_file_data_sharing(fd);
+		close(fd);
+		if (sharing == FILE_DATA_UNKNOWN)
+			continue;
+		if (sharing == FILE_DATA_SHARED) {
+			shared = 1;
+			break;
+		}
+		/*
+		 * Stop checking donors once there are enough candidates, but
+		 * finish looking for shared blocks in the rest of the sample.
+		 */
+		if (private_matches >= MIN_PRIVATE_MATCHES || target.st_size <= 0 ||
+		    target.st_nlink != 1 ||
+#ifdef __APPLE__
+		    target.st_flags || (target.st_mode & (S_ISUID | S_ISGID)) ||
+#endif
+		    reshare_target_stat_changed(index, ce, &target))
+			continue;
+		fd = open_donor(r, ce, &donor, &source_ce, DONOR_IN_PLACE);
+		if (fd < 0)
+			continue;
+		if (!fstat(fd, &source) && source.st_dev == target.st_dev &&
+		    source.st_ino != target.st_ino && source.st_size == target.st_size)
+			private_matches++;
+		close(fd);
+	}
+	rc.resharing = 0;
+	strbuf_release(&path);
+	strbuf_release(&donor);
+	trace2_data_intmax("reflink-probe", r, "sampled", sampled);
+	trace2_data_intmax("reflink-probe", r, "private-matches", private_matches);
+	trace2_data_intmax("reflink-probe", r, "shared", shared);
+	if (!shared && private_matches >= MIN_PRIVATE_MATCHES)
+		return reflink_reshare_worktree(r, &opts);
+	return 0;
+}
+
 int reflink_reshare_worktree(struct repository *r,
 			     const struct reflink_reshare_options *opts)
 {
@@ -1010,7 +1133,6 @@ int reflink_reshare_worktree(struct repository *r,
 		struct conv_attrs ca;
 		struct object_id oid;
 		int fd = -1, src_fd = -1, write_fd = -1, hash_fd, ret, changed;
-		int noatime = 0;
 #ifdef __APPLE__
 		struct strbuf tempdir = STRBUF_INIT, clone_path = STRBUF_INIT;
 		struct tempfile *clone_temp = NULL;
@@ -1019,23 +1141,13 @@ int reflink_reshare_worktree(struct repository *r,
 		int dedupe_error;
 #endif
 
-#if defined(__linux__) && defined(O_NOATIME)
-		noatime = O_NOATIME;
-#endif
 		total.scanned++;
-		if (ce_stage(ce) || !S_ISREG(ce->ce_mode) ||
-		    (ce->ce_flags & (CE_SKIP_WORKTREE | CE_INTENT_TO_ADD | CE_REMOVE))) {
+		if (!reshare_index_entry(ce)) {
 			result.reason = "index-entry";
 			goto record;
 		}
-		strbuf_reset(&path);
-		strbuf_addf(&path, "%s/%s", r->worktree, ce->name);
-		if (!has_worktree_leading_dirs(path.buf, r->worktree)) {
-			result.reason = "target-unavailable";
-			goto record;
-		}
-		fd = open(path.buf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | noatime);
-		if (fd < 0 || fstat(fd, &before) || !S_ISREG(before.st_mode)) {
+		fd = open_reshare_target(r, ce, &path, &before);
+		if (fd < 0) {
 			result.reason = "target-unavailable";
 			goto record;
 		}
@@ -1075,9 +1187,7 @@ int reflink_reshare_worktree(struct repository *r,
 			goto record;
 		}
 #endif
-		changed = ie_match_stat(r->index, ce, &before,
-			CE_MATCH_IGNORE_VALID | CE_MATCH_IGNORE_SKIP_WORKTREE |
-			CE_MATCH_IGNORE_FSMONITOR | CE_MATCH_RACY_IS_DIRTY);
+		changed = reshare_target_stat_changed(r->index, ce, &before);
 		/* Match ie_modified(): known size changes resolve dirty eligibility. */
 		if ((changed & (MODE_CHANGED | TYPE_CHANGED)) ||
 		    ((match_stat_data(&ce->ce_stat_data, &before) & DATA_CHANGED) &&
@@ -1223,7 +1333,7 @@ int reflink_reshare_worktree(struct repository *r,
 		total.eligible++;
 		result.deduplicated = before.st_size;
 #else
-		write_fd = open(path.buf, O_RDWR | O_NOFOLLOW | O_NONBLOCK | noatime);
+		write_fd = open(path.buf, O_RDWR | reshare_open_flags());
 		if (write_fd < 0 || fstat(write_fd, &after) || !same_file_stat(&before, &after)) {
 			result.reason = "target-unavailable";
 			goto record;
@@ -1313,7 +1423,12 @@ done:
 
 #else
 
-int reflink_checkout_enabled(struct repository *r UNUSED)
+int reflink_full_reshare_enabled(struct repository *r UNUSED)
+{
+	return 0;
+}
+
+int reflink_maybe_reshare_worktree(struct repository *r UNUSED)
 {
 	return 0;
 }

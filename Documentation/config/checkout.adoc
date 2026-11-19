@@ -44,10 +44,10 @@ well the parallel version performs.
 	default is 100.
 
 `checkout.reflink`::
-	If true, commands that write files to the working tree (checkout,
-	switch, reset, restore, merge, rebase, worktree add, ...) create a
-	file that the worktree's reflink source holds unmodified as a
-	copy-on-write clone of it. Eligible donors must pass the source
+	By default, commands that write files to the working tree (checkout,
+	switch, reset, restore, merge, rebase, worktree add, ...) use
+	copy-on-write clones when the worktree's reflink source holds the
+	matching file unmodified. Eligible donors must pass the source
 	index's stat checks and be non-racy. Git compares every cloned
 	snapshot with the ordinary recipient output before accepting it.
 	For filters such as LFS, Git runs the normal filter and shares a
@@ -55,25 +55,33 @@ well the parallel version performs.
 	If false, cloning is disabled, even in worktrees created with
 	`git worktree add --reflink` (only that command's own initial
 	checkout still clones).
-	If unset, `git worktree add` enables cloning in the new linked
-	worktree when it has a source, unless `--no-reflink` is given.
-	Later commands clone in worktrees with a reflink-source marker.
+	If unset, `git worktree add` records a reflink-source marker in the
+	new linked worktree when it has a source, unless `--no-reflink` is
+	given. The marker enables the additional hard-reset repair pass.
 	A value that is not a boolean disables cloning, with a warning.
 	Cloning is supported on APFS (macOS) and on btrfs, XFS,
 	bcachefs and overlayfs (Linux); elsewhere, across filesystems, and
 	on Windows, files are silently written as usual. See
 	linkgit:git-worktree[1].
 +
-A successful `reset --hard` with effective reflink enablement also runs
-`worktree reflink` over eligible existing files, including clean private files
-that ordinary reset leaves untouched. It preserves the ordinary reset result
+After a successful `switch` or branch checkout with a usable donor,
+Git samples up to 50 entries from the resulting index. If a sampled
+file already shares blocks, Git skips the repair pass. Otherwise,
+five private, stat-clean files with matching donor entries and file
+sizes trigger `worktree reflink` over the worktree. The sample uses
+metadata. The repair still verifies actual bytes before sharing.
++
+A successful `reset --hard` also runs `worktree reflink` over eligible existing
+files if `checkout.reflink` is true, or if it is unset and the worktree has a
+reflink-source marker. This can re-share clean private files that ordinary reset
+leaves untouched. It preserves the ordinary reset result
 and existing physical representation. The pass skips fully shared files and
 unsupported cases; failures warn without undoing or failing the completed
 reset. It incurs metadata scanning and, for private candidates, kernel
 comparison on Linux or clone/byte-comparison/replacement on APFS. APFS has the
 file-replacement concurrency limits documented in linkgit:git-worktree[1].
-`reset --soft`, `reset --mixed` and no-op checkout/switch do not request this
-repair pass. Explicit false overrides a worktree's reflink-source marker.
+Explicit false overrides a worktree's reflink-source marker and disables
+the checkout sample.
 Commands such as `git lfs checkout` and `git lfs pull` write through Git LFS
 itself. To share those existing files, use `git worktree reflink` after
 writers quiesce or let a subsequent reflink-enabled hard reset repair

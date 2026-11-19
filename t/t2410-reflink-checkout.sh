@@ -157,9 +157,8 @@ test_expect_success 'checkout.reflink=false opts out of default sharing' '
 	test_grep ! "\"category\":\"reflink\"" trace.json &&
 	test_not_shared big1 wt-disabled/big1 &&
 	test_same_as_checkout wt-disabled main &&
-	# The command-line config is no longer in effect. This unmarked
-	# worktree still uses an ordinary reset, without a repair scan.
-	rm wt-disabled/big1 &&
+	# With the command-line config gone, a same-HEAD reset in this
+	# unmarked worktree still leaves existing files in place.
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git -C wt-disabled reset -q --hard &&

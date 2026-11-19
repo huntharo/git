@@ -42,6 +42,15 @@ struct file_data_usage {
 };
 int get_file_data_usage(int fd, struct file_data_usage *usage);
 
+enum file_data_sharing {
+	FILE_DATA_UNKNOWN,
+	FILE_DATA_PRIVATE,
+	FILE_DATA_SHARED,
+};
+
+/* Inspect a regular file's allocation without requesting writeback. */
+enum file_data_sharing get_file_data_sharing(int fd);
+
 /*
  * In-place compare-and-share, preserving the destination inode and contents.
  * Returns 0 for a complete range, 1 for differing bytes, -1 on error. Even a

@@ -110,6 +110,58 @@ test_expect_success REFLINK 'switch away and back clones again' '
 	test "$(git symbolic-ref HEAD)" = refs/heads/src
 '
 
+test_expect_success REFLINK 'unmarked worktree clones files written by switch, checkout and reset' '
+	add_wt wt-unmarked other --no-reflink --detach &&
+	test_not_shared wt-unmarked/dir/e dir/e &&
+	test_path_is_missing .git/worktrees/wt-unmarked/reflink-source &&
+
+	traced git -C wt-unmarked switch -q --detach HEAD &&
+	test_reflink_count cloned 0 trace.json &&
+	test_grep ! "\"category\":\"reflink-reshare\"" trace.json &&
+
+	git -C wt-unmarked switch -q --detach src &&
+	shared_with_source wt-unmarked a b c &&
+	test_not_shared wt-unmarked/dir/e dir/e &&
+
+	rm wt-unmarked/b &&
+	git -C wt-unmarked checkout -- b &&
+	shared_with_source wt-unmarked b &&
+
+	rm wt-unmarked/c &&
+	git -C wt-unmarked reset -q --hard &&
+	shared_with_source wt-unmarked c &&
+
+	rm wt-unmarked/a &&
+	git -C wt-unmarked -c checkout.reflink=false checkout -- a &&
+	test_not_shared wt-unmarked/a a &&
+	test_same_as_checkout wt-unmarked src
+'
+
+test_expect_success REFLINK_BUILD 'valueless checkout.reflink enables checkout and worktree add' '
+	add_wt wt-valueless other --no-reflink --detach &&
+	test_when_finished "git config --unset-all checkout.reflink" &&
+	printf "\n[checkout]\n\treflink\n" >>.git/config &&
+	git -C wt-valueless switch -q --detach src &&
+	add_wt wt-bool-add src --reflink --detach &&
+	if test_have_prereq REFLINK
+	then
+		shared_with_source wt-valueless a &&
+		shared_with_source wt-bool-add a
+	fi
+'
+
+test_expect_success REFLINK_BUILD 'valueless checkout.reflinkSource falls back to the main worktree' '
+	add_wt wt-valueless-source other --no-reflink --detach &&
+	test_when_finished "git config --unset-all checkout.reflinkSource" &&
+	printf "\n[checkout]\n\treflinkSource\n" >>.git/config &&
+	git switch -q src &&
+	git -C wt-valueless-source switch -q --detach src &&
+	if test_have_prereq REFLINK
+	then
+		shared_with_source wt-valueless-source a
+	fi
+'
+
 # unaware_git <arg>...: run git the way a version without reflink
 # checkout would: every file it writes is written the ordinary way. (Such
 # a git ignores checkout.reflink and the reflink-source file.)
