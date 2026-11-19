@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import tarfile
@@ -52,7 +53,6 @@ def download(url, checksum, destination):
     if not destination.exists() or sha256(destination) != checksum:
         partial = destination.with_suffix('.partial')
         with urllib.request.urlopen(url, timeout=120) as inp, partial.open('wb') as out:
-            import shutil
             shutil.copyfileobj(inp, out)
         if sha256(partial) != checksum:
             partial.unlink()
@@ -86,6 +86,35 @@ def extract(archive, destination):
 
     with tarfile.open(archive) as tar:
         tar.extractall(destination, filter=data_filter)
+
+
+def prepare_build_source(out, repo, inputs, resume):
+    source = out / 'source'
+    archive = out / 'git-source.tar.gz'
+    stamp = out / 'build-inputs.json'
+    if source.exists() or stamp.exists():
+        if not resume or not source.is_dir() or not stamp.is_file():
+            raise ValueError('Cannot establish build provenance; use a fresh --output directory')
+        previous = json.loads(stamp.read_text())
+        if (previous['inputs'] != inputs or not archive.is_file()
+                or previous['source_archive_sha256'] != sha256(archive)):
+            raise ValueError('Build inputs or source archive changed; use a fresh --output directory')
+    else:
+        source.mkdir()
+        with archive.open('wb') as stream:
+            subprocess.run(['git', 'archive', '--format=tar.gz', inputs['source_revision']],
+                           cwd=repo, stdout=stream, check=True)
+        extract(archive, source)
+        # Record provenance after extraction and before make creates any objects.
+        write_json(stamp, dict(inputs=inputs, source_archive_sha256=sha256(archive)))
+
+    if resume:
+        # Install, strip, and dependency bundling must start from a clean tree.
+        # Keep the source/object tree and checksum-pinned dependency downloads.
+        for name in ('stage', 'symbols', 'library-sources'):
+            generated = out / name
+            if generated.exists() or generated.is_symlink():
+                shutil.rmtree(generated)
 
 
 def is_macho(path):

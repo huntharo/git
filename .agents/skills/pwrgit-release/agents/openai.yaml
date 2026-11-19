@@ -1,0 +1,3 @@
+interface:
+  display_name: "PwrGit Release"
+  short_description: "Publish and verify custom PwrGit runtimes"

@@ -11,9 +11,93 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from runtime import download, extract, ldd_dependencies, seal, verify_inventory
+from runtime import download, extract, ldd_dependencies, prepare_build_source, seal, sha256, verify_inventory
 from configuration import verify_configuration
 from certificates import install_ca_bundle, verify_ca_bundle
+
+
+class BuildResumeTests(unittest.TestCase):
+    def test_only_matching_inputs_reuse_objects_and_reset_generated_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo, out = root / 'repo', root / 'build'
+            repo.mkdir()
+            out.mkdir()
+            subprocess.run(['git', 'init', '-q', repo], check=True)
+            (repo / 'source.c').write_text('original source\n')
+            subprocess.run(['git', '-C', repo, 'add', 'source.c'], check=True)
+            subprocess.run(['git', '-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                            '-c', 'commit.gpgSign=false', 'commit', '-qm', 'Source'], check=True)
+            revision = subprocess.check_output(['git', '-C', repo, 'rev-parse', 'HEAD'], text=True).strip()
+            inputs = dict(source_revision=revision, platform='linux', architecture='x64')
+            prepare_build_source(out, repo, inputs, False)
+            self.assertEqual((out / 'source/source.c').read_text(), 'original source\n')
+            files = [out / 'source/source.o', out / 'cached-download.zip']
+            stale = [out / 'stage/pwrgit/lib', out / 'symbols', out / 'library-sources']
+            for path in files:
+                path.write_bytes(b'keep')
+            for path in stale:
+                path.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, 'fresh --output'):
+                prepare_build_source(out, repo, dict(inputs, source_revision='0' * 40), True)
+            self.assertTrue(all(path.exists() for path in stale))
+            prepare_build_source(out, repo, inputs, True)
+            self.assertTrue(all(path.read_bytes() == b'keep' for path in files))
+            self.assertTrue(all(not path.exists() for path in stale))
+
+            (out / 'git-source.tar.gz').write_bytes(b'wrong source')
+            with self.assertRaisesRegex(ValueError, 'source archive changed'):
+                prepare_build_source(out, repo, inputs, True)
+            (out / 'build-inputs.json').unlink()
+            with self.assertRaisesRegex(ValueError, 'Cannot establish build provenance'):
+                prepare_build_source(out, repo, inputs, True)
+
+
+class PublishReleaseTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            'publish_release', Path(__file__).with_name('publish-release.py'))
+        self.publisher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.publisher)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.directory = Path(tmp.name)
+        self.tag = 'v2.56.0-dev-pwrgit.4'
+        for name in ('RELEASE-NOTES.txt', 'runtime.tar.gz'):
+            (self.directory / name).write_text(name)
+        self.draft = dict(id=71, tag_name=self.tag, draft=True, assets=[
+            dict(name=p.name, digest='sha256:' + sha256(p)) for p in self.directory.iterdir()])
+
+    def publish(self):
+        with patch('sys.stdout', io.StringIO()):
+            self.publisher.publish_release('huntharo/git', self.tag, self.directory)
+
+    def test_creates_only_if_absent_and_verifies_before_publish(self):
+        listed, detail = json.dumps([[], [self.draft]]), json.dumps(self.draft)
+        for existing in (False, True):
+            responses = [listed, detail, 'release URL']
+            if not existing:
+                responses[:0] = ['[[]]', 'draft URL']
+            with self.subTest(existing=existing), patch.object(self.publisher, 'run', side_effect=responses) as gh:
+                self.publish()
+                commands = [call.args[0] for call in gh.call_args_list]
+                self.assertEqual(sum(cmd[:3] == ['gh', 'release', 'create'] for cmd in commands), int(not existing))
+                self.assertEqual(commands[-2], ['gh', 'api', 'repos/huntharo/git/releases/71'])
+                self.assertEqual(commands[-1][2:5], ['--method', 'PATCH', 'repos/huntharo/git/releases/71'])
+
+    def test_rejects_invalid_drafts_and_published_releases_without_any_write(self):
+        for listing, detail in (
+            ([dict(self.draft, draft=False)], self.draft),
+            ([self.draft, dict(self.draft, id=72)], self.draft),
+            ([self.draft], dict(self.draft, assets=[])),
+            ([self.draft], dict(self.draft, assets=[dict(a, digest='sha256:' + '0' * 64) for a in self.draft['assets']])),
+        ):
+            with self.subTest(listing=listing, detail=detail), patch.object(
+                    self.publisher, 'run', side_effect=[json.dumps([listing]), json.dumps(detail)]) as gh:
+                with self.assertRaises(ValueError):
+                    self.publish()
+                self.assertTrue(all(call.args[0][:2] == ['gh', 'api'] and '--method' not in call.args[0]
+                                    for call in gh.call_args_list))
 
 
 class CertificateTests(unittest.TestCase):

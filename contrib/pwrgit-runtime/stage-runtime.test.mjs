@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readRuntimeManifest, verifyRuntime as verifyRuntimeRaw } from "./stage-runtime.mjs";
+import { readRuntimeManifest, stageRuntime, verifyRuntime as verifyRuntimeRaw } from "./stage-runtime.mjs";
 const verifyRuntime = (root, pin) => verifyRuntimeRaw(root, pin, { probe: false });
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -18,6 +19,7 @@ function fixture(t) {
   mkdirSync(root);
   const bytes = JSON.stringify({ version, source_revision: source, primary_sha1: "SHA1_DC" });
   writeFileSync(join(root, "pwrgit-build.json"), bytes, { mode: 0o644 });
+  chmodSync(join(root, "pwrgit-build.json"), 0o644);
   const inventory = JSON.stringify({ "pwrgit-build.json": { sha256: hash(bytes), mode: 0o644 } });
   writeFileSync(join(root, "runtime-files.json"), inventory);
   const pin = { manifest: { version, source_revision: source }, key: "linux-x64", asset: { inventory_sha256: hash(inventory) } };
@@ -68,4 +70,51 @@ test("manifest rejects mutable URLs, missing pins, and unnotarized macOS payload
   delete asset.sha256;
   writeFileSync(path, JSON.stringify(m));
   assert.throws(() => readRuntimeManifest(path, "darwin", "arm64"), /incomplete/);
+});
+
+test("stages a cached archive under umask 077 with its sealed modes intact", async (t) => {
+  const { temp, root } = fixture(t);
+  const metadata = join(root, "pwrgit-build.json");
+  writeFileSync(metadata, JSON.stringify({ ...JSON.parse(readFileSync(metadata)), lfs_version: "3.7.1" }));
+  mkdirSync(join(root, "bin"));
+  const git = join(root, "bin", "git");
+  writeFileSync(git, `#!/bin/sh
+case "$*" in
+  '--version') echo 'git version ${version}' ;;
+  'version --build-options') printf '%s\\n' 'SHA-1: SHA1_DC' 'built from commit: ${source}' ;;
+  '--exec-path') printf '%s/libexec/git-core\\n' "\${0%/bin/git}" ;;
+  'lfs version') echo 'git-lfs/3.7.1 test' ;;
+  *) exit 1 ;;
+esac
+`);
+  chmodSync(git, 0o755);
+  const inventory = JSON.stringify({
+    "bin/git": { sha256: hash(readFileSync(git)), mode: 0o755 },
+    "pwrgit-build.json": { sha256: hash(readFileSync(metadata)), mode: 0o644 },
+  });
+  writeFileSync(join(root, "runtime-files.json"), inventory);
+  const cache = join(temp, "explicit-cache");
+  mkdirSync(cache);
+  const archive = join(temp, "fixture.tar.gz");
+  execFileSync("tar", ["-czf", archive, "-C", root, "."]);
+  const digest = hash(readFileSync(archive));
+  renameSync(archive, join(cache, `${digest}.tar.gz`));
+
+  const manifestPath = join(temp, "manifest.json");
+  writeFileSync(manifestPath, JSON.stringify({
+    schema: 1, version, source_revision: source,
+    consumer_sha256: hash(readFileSync(new URL("./stage-runtime.mjs", import.meta.url))),
+    assets: { "linux-x64": { sha256: digest, inventory_sha256: hash(inventory),
+      url: `https://github.com/huntharo/git/releases/download/v${version}/runtime.tar.gz` } },
+  }));
+  t.mock.method(globalThis, "fetch", () => assert.fail("Expected reuse of explicit cache"));
+  const output = join(temp, "staged");
+  const oldUmask = process.umask(0o077);
+  try {
+    await stageRuntime({ manifestPath, platform: "linux", arch: "x64", output, cache });
+  } finally {
+    process.umask(oldUmask);
+  }
+  assert.equal(statSync(join(output, "pwrgit-build.json")).mode & 0o777, 0o644);
+  assert.equal(statSync(join(output, "bin/git")).mode & 0o777, 0o755);
 });

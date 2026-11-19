@@ -121,6 +121,11 @@ python3 contrib/pwrgit-runtime/smoke.py /tmp/git-universal \
   --require-sharing --https --report /tmp/git-smoke.json
 ----
 
+`build.py --resume` reuses a trusted build directory only when its recorded
+inputs and source archive match. Use a fresh output for a different source or
+an older build without a provenance record. Resume rebuilds the installed
+staging tree, symbols and Linux library-source staging from scratch.
+
 The CI workflow builds Linux x64/ARM64 in a digest-pinned Ubuntu 22.04
 container against an immutable Ubuntu archive snapshot. It bundles
 non-glibc libraries with relative ELF RPATHs, their notices, exact source
@@ -206,6 +211,9 @@ digest, and staged atomically. A valid cached archive works offline. A failed
 download, checksum, signature or inventory check is fatal; it cannot select
 system Git or an upstream Dugite archive. Release assets are immutable:
 publish a new identified build instead of replacing an approved archive.
+If publication stops after upload, retry the failed publish job. It reuses
+an existing draft only if its complete asset set and digests match the
+prepared release. Incomplete, ambiguous and published releases are rejected.
 
 == Correctness scope
 

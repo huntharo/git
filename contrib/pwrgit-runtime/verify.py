@@ -77,13 +77,15 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-relocated-') as tmp:
         # The helper ignores unknown actions after parsing input. An empty get
         # can query the host keychain and prompt, so use a launch-only action.
         run([git, 'credential-osxkeychain', 'pwrgit-launch-check'], input=b'\n', env=env)
-    # Resolution must be through the relocated exec path. This command does not
-    # make a network request and fails after the helper validates the protocol.
-    try:
-        run([git, 'remote-https', 'origin', 'invalid://pwrgit.invalid/repository'], input=b'capabilities\n', env=env)
-    except Exception as error:
-        if not hasattr(error, 'returncode'):
-            raise
+    # Require the packaged helper even if the host provides a PATH fallback.
+    helper = root / 'libexec/git-core/git-remote-https'
+    if not helper.is_file() or not os.access(helper, os.X_OK):
+        raise ValueError(f'Missing executable HTTPS helper: {helper}')
+    # Capabilities followed by a blank line exercises the protocol offline.
+    capabilities = run([git, 'remote-https', 'origin', 'https://pwrgit.invalid/repository'],
+                       input=b'capabilities\n\n', cwd=repo, env=env, timeout=10).splitlines()
+    if not {'fetch', 'option', 'push'}.issubset(capabilities):
+        raise ValueError('Packaged HTTPS helper did not advertise expected capabilities')
 result = dict(version=m['version'], source_revision=m['source_revision'],
               build_options=build_options,
               architecture=m['architecture'], sealed_inventory=True,

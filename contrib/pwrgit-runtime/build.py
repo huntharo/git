@@ -12,14 +12,14 @@ import platform
 import shutil
 import subprocess
 
-from runtime import HERE, download, extract, is_macho, package, run, seal, sha256, unpack_lfs, write_json
+from runtime import HERE, download, is_macho, package, prepare_build_source, run, seal, sha256, unpack_lfs, write_json
 from certificates import install_ca_bundle
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output', type=Path, required=True)
 p.add_argument('--arch', choices=['arm64', 'x64'], required=True)
 p.add_argument('--jobs', type=int, default=4)
-p.add_argument('--resume', action='store_true', help='Re-extract pinned source and run incremental make in this build directory')
+p.add_argument('--resume', action='store_true', help='Reuse objects only for matching build inputs and recreate generated staging')
 p.add_argument('--lock', type=Path, default=HERE / 'build-lock.json')
 a = p.parse_args()
 lock = json.loads(a.lock.read_text())
@@ -30,7 +30,6 @@ if host == 'linux' and platform.machine() not in ({'x86_64', 'amd64'} if a.arch 
 out = a.output.resolve()
 out.mkdir(parents=True, exist_ok=a.resume)
 source = out / 'source'
-source.mkdir(exist_ok=a.resume)
 stage = out / 'stage'
 root = stage / 'pwrgit'
 revision = lock['source']['revision']
@@ -41,9 +40,6 @@ source_ref = lock['source']['ref']
 if run(['git', 'rev-parse', '--verify', source_ref + '^{commit}'], cwd=repo) != revision:
     raise ValueError('Frozen source ref does not match the exact pinned commit')
 archive = out / 'git-source.tar.gz'
-with archive.open('wb') as stream:
-    subprocess.run(['git', 'archive', '--format=tar.gz', revision], cwd=repo, stdout=stream, check=True)
-extract(archive, source)
 env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_', 'LD_'))}
 for name in ('MAKEFLAGS', 'MFLAGS', 'CFLAGS', 'CPPFLAGS', 'LDFLAGS', 'CC', 'CXX', 'AR', 'RANLIB',
              'OPENSSL_SHA1', 'BLK_SHA1', 'APPLE_COMMON_CRYPTO_SHA1', 'DC_SHA1', 'DC_SHA1_EXTERNAL'):
@@ -62,6 +58,13 @@ if host == 'darwin':
 else:
     # SHA1_DC remains primary; no SHA1_UNSAFE or SHA1_APPLE replaces it.
     flags += ['NO_OPENSSL=1']
+compiler = run(['clang' if host == 'darwin' else 'cc', '--version'])
+sdk = run(['xcrun', '--show-sdk-version']) if host == 'darwin' else None
+prepare_build_source(out, repo, dict(
+    source_revision=revision, version=lock['version'], platform=host,
+    architecture=a.arch, flags=flags, compiler=compiler, sdk=sdk,
+    macos_deployment_target=env.get('MACOSX_DEPLOYMENT_TARGET') if host == 'darwin' else None,
+), a.resume)
 
 
 def make(targets, log):
@@ -105,7 +108,7 @@ shutil.copy2(HERE / 'gitconfig', root / 'etc/gitconfig')
     'Build lock, build scripts and dependency notices accompany the release.\n'
     'Git helpers use system shell/SSH and OS credential integration; no GCM/.NET runtime is included.\n')
 debug = out / 'symbols'
-debug.mkdir(exist_ok=a.resume)
+debug.mkdir()
 for path in sorted(root.rglob('*')):
     if path.is_symlink() or not path.is_file():
         continue
@@ -148,8 +151,7 @@ manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 minimum_os=lock['macos_deployment_target'] if host == 'darwin' else 'glibc ' + lock['linux_glibc_baseline'],
                 minimum_os_tested=False, build_host=platform.platform(),
                 source_date_epoch=env['SOURCE_DATE_EPOCH'],
-                compiler=run(['clang' if host == 'darwin' else 'cc', '--version']),
-                sdk=run(['xcrun', '--show-sdk-version']) if host == 'darwin' else None,
+                compiler=compiler, sdk=sdk,
                 lfs_debug_symbols='Not provided in upstream prebuilt release',
                 optional_components_omitted=['Perl commands', 'Tcl/Tk GUI', 'gettext translations', 'Rust', 'GCM'])
 if host == 'linux':
