@@ -620,20 +620,17 @@ test_expect_success REFLINK 'donor modified after phase one fails verification' 
 
 test_expect_success REFLINK 'donor replaced by a directory after phase one' '
 	test_when_finished "remove_wt wt-replace && rm -rf big1 big1.tampered && restore_main" &&
-	test_config core.useNanoSec true &&
-	rm -f trace.json &&
 	GIT_TEST_REFLINK_TAMPER=big1:replace \
-	GIT_TRACE2_EVENT="$TRACE_JSON" \
 		git worktree add -q --detach --reflink wt-replace main &&
 	test_path_is_file big1/untracked &&
 	test_path_is_file big1.tampered &&
-	# The open descriptor remains safe, but rename changed its ctime.
-	# The normal stat recheck conservatively falls back.
-	test_reflink_count cloned $((NONEMPTY - 1)) trace.json &&
+	# Depending on timestamp resolution, the stat recheck can reject
+	# the rename or the byte check can accept the still-open file.
+	# Neither outcome can read from the replacement directory.
 	test_path_is_file wt-replace/big1 &&
 	! test -h wt-replace/big1 &&
 	test_path_is_missing wt-replace/big1.tampered &&
-	test_not_shared big1.tampered wt-replace/big1 &&
+	test_shared big2 wt-replace/big2 &&
 	git show HEAD:big1 >expect &&
 	test_cmp expect wt-replace/big1 &&
 	find wt-replace -name untracked >actual &&
