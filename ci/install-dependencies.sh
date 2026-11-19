@@ -8,7 +8,7 @@
 begin_group "Install dependencies"
 
 P4WHENCE=https://cdist2.perforce.com/perforce/r23.2
-LFSWHENCE=https://github.com/github/git-lfs/releases/download/v$LINUX_GIT_LFS_VERSION
+LFSWHENCE=https://github.com/git-lfs/git-lfs/releases/download/v$LINUX_GIT_LFS_VERSION
 JGITWHENCE=https://repo1.maven.org/maven2/org/eclipse/jgit/org.eclipse.jgit.pgm/6.8.0.202311291450-r/org.eclipse.jgit.pgm-6.8.0.202311291450-r.sh
 CARGO_MSRV_VERSION=0.18.4
 CARGO_MSRV_WHENCE=https://github.com/foresterre/cargo-msrv/releases/download/v$CARGO_MSRV_VERSION/cargo-msrv-x86_64-unknown-linux-musl-v$CARGO_MSRV_VERSION.tgz
@@ -99,12 +99,14 @@ ubuntu-*|i386/debian-*|debian-*)
 		echo "$(tput setaf 6)Perforce Client Version$(tput sgr0)"
 		p4 -V
 
-		wget --quiet \
-		     "$LFSWHENCE/git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz"
-		tar -xzf "git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz" \
+		lfs_archive="git-lfs-linux-amd64-v$LINUX_GIT_LFS_VERSION.tar.gz"
+		wget --quiet --output-document="$lfs_archive" "$LFSWHENCE/$lfs_archive"
+		printf '%s  %s\n' "$LINUX_GIT_LFS_SHA256" "$lfs_archive" |
+			sha256sum --check
+		tar -xzf "$lfs_archive" \
 			-C "$CUSTOM_PATH" --strip-components=1 \
 			"git-lfs-$LINUX_GIT_LFS_VERSION/git-lfs"
-		rm "git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz"
+		rm "$lfs_archive"
 		echo "$(tput setaf 6)Git-LFS Version$(tput sgr0)"
 		git-lfs version
 

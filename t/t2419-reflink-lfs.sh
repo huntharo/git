@@ -12,8 +12,11 @@ test_lazy_prereq RESHARE '
 	esac
 '
 
-test_lazy_prereq GIT_LFS '
-	git lfs version
+# The fixture uses a bare repository as a local LFS remote in both directions.
+test_lazy_prereq GIT_LFS_FILE_TRANSPORT '
+	git lfs env >lfs-env &&
+	grep "^DownloadTransfers=.*lfs-standalone-file" lfs-env &&
+	grep "^UploadTransfers=.*lfs-standalone-file" lfs-env
 '
 
 test_lazy_prereq SHA256SUM '
@@ -27,6 +30,15 @@ sha256 () {
 	else
 		shasum -a 256 <"$1"
 	fi | cut -d" " -f1
+}
+
+# Set up the standard driver without installing hooks or depending on
+# the version-specific flags of git lfs install.
+configure_lfs () {
+	git -C "$1" config filter.lfs.clean "git-lfs clean -- %f" &&
+	git -C "$1" config filter.lfs.smudge "git-lfs smudge -- %f" &&
+	git -C "$1" config filter.lfs.process "git-lfs filter-process" &&
+	git -C "$1" config filter.lfs.required true
 }
 
 lfs_pair () {
@@ -62,14 +74,14 @@ verify_hydrated () {
 	test_cmp payload "$1"
 }
 
-test_expect_success GIT_LFS,SHA256SUM 'setup LFS payload, committed pointer, and local bare remote' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'setup LFS payload, committed pointer, and local bare remote' '
 	sane_unset GIT_LFS_SKIP_SMUDGE GIT_LFS_SKIP_DOWNLOAD_ERRORS &&
 	asset="data and quote'\''.lfs" &&
 	git init -q source &&
 	git init -q --bare remote.git &&
 	git -C source remote add origin "$TRASH_DIRECTORY/remote.git" &&
 	git -C source config lfs.storage "$TRASH_DIRECTORY/warm" &&
-	git -C source lfs install --local --skip-repo &&
+	configure_lfs source &&
 	echo "*.lfs filter=lfs diff=lfs merge=lfs -text" >source/.gitattributes &&
 	test-tool genrandom payload 131072 >payload &&
 	cp payload "source/$asset" &&
@@ -89,13 +101,13 @@ test_expect_success GIT_LFS,SHA256SUM 'setup LFS payload, committed pointer, and
 	git lfs version
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'process and single-file smudge agree with ordinary checkout; filter runs once per checkout' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'process and single-file smudge agree with ordinary checkout; filter runs once per checkout' '
 	test_when_finished remove_pair &&
 	write_script record-lfs <<-\EOF &&
 	echo "$1" >>"$LFS_LOG"
 	exec git-lfs "$@"
 	EOF
-	test_when_finished "git -C source lfs install --local --skip-repo" &&
+	test_when_finished "configure_lfs source" &&
 	for filter in process smudge
 	do
 		if test "$filter" = smudge
@@ -129,7 +141,7 @@ test_expect_success GIT_LFS,SHA256SUM 'process and single-file smudge agree with
 	done
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'skip-smudge, fetch exclusion and absent driver keep pointer bytes' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'skip-smudge, fetch exclusion and absent driver keep pointer bytes' '
 	test_when_finished remove_pair &&
 	(
 		GIT_LFS_SKIP_SMUDGE=1 &&
@@ -147,13 +159,13 @@ test_expect_success GIT_LFS,SHA256SUM 'skip-smudge, fetch exclusion and absent d
 	done &&
 	# An unknown driver is distinct from a configured but failed driver.
 	git -C source config --remove-section filter.lfs &&
-	test_when_finished "git -C source lfs install --local --skip-repo" &&
+	test_when_finished "configure_lfs source" &&
 	lfs_pair &&
 	test_cmp pointer "shared/$asset" &&
 	remove_pair
 '
 
-test_expect_success GIT_LFS,SHA256SUM,REFLINK 'matching pointer donors share only when the recipient writes the pointer' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,REFLINK 'matching pointer donors share only when the recipient writes the pointer' '
 	GIT_LFS_SKIP_SMUDGE=1 git -C source worktree add -q --no-reflink --detach ../pointer-donor &&
 	test_when_finished "git -C source worktree remove -f ../pointer-donor" &&
 	test-tool chmtime =-60 "pointer-donor/$asset" &&
@@ -169,7 +181,7 @@ test_expect_success GIT_LFS,SHA256SUM,REFLINK 'matching pointer donors share onl
 	test_not_shared "pointer-donor/$asset" "hydrated/$asset"
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'cold caches fetch from the local bare remote before sharing' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'cold caches fetch from the local bare remote before sharing' '
 	test_when_finished remove_pair &&
 	test_when_finished "git -C source config lfs.storage \"$TRASH_DIRECTORY/warm\"" &&
 	for wt in ordinary shared
@@ -194,7 +206,7 @@ test_expect_success GIT_LFS,SHA256SUM 'cold caches fetch from the local bare rem
 	remove_pair
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'required download failures survive with an eligible hydrated donor' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'required download failures survive with an eligible hydrated donor' '
 	test_when_finished remove_pair &&
 	mkdir empty-remote &&
 	git init -q --bare empty-remote &&
@@ -208,7 +220,7 @@ test_expect_success GIT_LFS,SHA256SUM 'required download failures survive with a
 		test_path_is_missing "failed/$asset" || return 1
 	done &&
 	git -C source config --unset filter.lfs.process &&
-	test_when_finished "git -C source lfs install --local --skip-repo" &&
+	test_when_finished "configure_lfs source" &&
 	lfs_pair -c filter.lfs.required=false -c "lfs.url=file://$TRASH_DIRECTORY/empty-remote" &&
 	test_cmp pointer "shared/$asset" &&
 	test_grep "external filter.*failed" ordinary.err &&
@@ -216,7 +228,7 @@ test_expect_success GIT_LFS,SHA256SUM 'required download failures survive with a
 	remove_pair
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'corrupt cache behavior agrees with ordinary checkout even with a good donor' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'corrupt cache behavior agrees with ordinary checkout even with a good donor' '
 	test_when_finished remove_pair &&
 	test_when_finished "git -C source config lfs.storage \"$TRASH_DIRECTORY/warm\"" &&
 	cp -R warm corrupt &&
@@ -253,7 +265,7 @@ test_expect_success GIT_LFS,SHA256SUM 'corrupt cache behavior agrees with ordina
 	fi
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'target revision removes the LFS rule without changing pointer identity' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'target revision removes the LFS rule without changing pointer identity' '
 	test_when_finished remove_pair &&
 	git -C source branch with-lfs &&
 	git -C source worktree add -q --no-reflink --detach ../change &&
@@ -277,7 +289,7 @@ test_expect_success GIT_LFS,SHA256SUM 'target revision removes the LFS rule with
 	remove_pair
 '
 
-test_expect_success GIT_LFS,SHA256SUM,RESHARE 'maintenance shares existing hydrated bytes without invoking LFS' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'maintenance shares existing hydrated bytes without invoking LFS' '
 	git -C source worktree add -q --detach --no-reflink ../private &&
 	test_when_finished "git -C source worktree remove -f ../private" &&
 	test-tool chmtime =-60 "private/$asset" &&
@@ -291,9 +303,9 @@ test_expect_success GIT_LFS,SHA256SUM,RESHARE 'maintenance shares existing hydra
 	test_shared "source/$asset" "private/$asset"
 '
 
-test_expect_success GIT_LFS,SHA256SUM 'LFS extension output, not the stored transformed data, is shared' '
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'LFS extension output, not the stored transformed data, is shared' '
 	git init -q extension &&
-	git -C extension lfs install --local --skip-repo &&
+	configure_lfs extension &&
 	rot13="tr A-Za-z N-ZA-Mn-za-m" &&
 	git -C extension config lfs.extension.rot.clean "$rot13" &&
 	git -C extension config lfs.extension.rot.smudge "$rot13" &&
