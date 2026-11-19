@@ -110,8 +110,8 @@ static int is_main_worktree_bare(struct repository *repo)
 /**
  * get the main worktree
  */
-static struct worktree *get_main_worktree(struct repository *repo,
-					  int skip_reading_head)
+struct worktree *get_main_worktree(struct repository *repo,
+				   int skip_reading_head)
 {
 	struct worktree *worktree = NULL;
 	struct strbuf worktree_path = STRBUF_INIT;

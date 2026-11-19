@@ -308,6 +308,60 @@ test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'maintenance shares
 	test_shared "source/$asset" "private/$asset"
 '
 
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,REFLINK 'verified alternate shares hydrated LFS bytes after rejecting a primary pointer' '
+	git init -q lfs-alternates/main &&
+	configure_lfs lfs-alternates/main &&
+	cp source/.gitattributes lfs-alternates/main/ &&
+	cp payload lfs-alternates/main/file.lfs &&
+	for n in 1 2 3
+	do
+		make_blob_file "lfs-alternates/main/control-$n" 64 || return 1
+	done &&
+	git -C lfs-alternates/main add . &&
+	git -C lfs-alternates/main commit -qm hydrated &&
+	git -C lfs-alternates/main worktree add -q --no-reflink --detach ../donor &&
+	reflink_stable_source lfs-alternates/donor &&
+	rm lfs-alternates/main/file.lfs &&
+	GIT_LFS_SKIP_SMUDGE=1 git -C lfs-alternates/main -c checkout.reflink=false \
+		checkout -- file.lfs &&
+	test_cmp pointer lfs-alternates/main/file.lfs &&
+	GIT_LFS_SKIP_SMUDGE=1 reflink_stable_source lfs-alternates/main &&
+	>calls &&
+	rm -f trace.json &&
+	LFS_LOG="$TRASH_DIRECTORY/calls" GIT_TRACE2_EVENT="$TRACE_JSON" \
+		git -C lfs-alternates/main \
+		-c "filter.lfs.process=\"$TRASH_DIRECTORY/record-lfs\" filter-process" \
+		worktree add -q --detach ../shared &&
+	test_line_count = 1 calls &&
+	test_reflink_count verify-failed 1 trace.json &&
+	test_reflink_count alternate-index-read 1 trace.json &&
+	verify_hydrated lfs-alternates/shared/file.lfs &&
+	test_shared lfs-alternates/donor/file.lfs lfs-alternates/shared/file.lfs &&
+	git -C lfs-alternates/shared status --porcelain >status &&
+	test_must_be_empty status &&
+	git -C lfs-alternates/main worktree remove -f ../shared
+'
+
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'sampled repair counts the hydrated alternate and re-shares LFS without filtering' '
+	git -C lfs-alternates/main worktree add -q --no-reflink --detach ../private &&
+	reflink_stable_source lfs-alternates/private &&
+	test_not_shared lfs-alternates/donor/file.lfs lfs-alternates/private/file.lfs &&
+	>calls &&
+	rm -f trace.json &&
+	LFS_LOG="$TRASH_DIRECTORY/calls" GIT_TRACE2_EVENT="$TRACE_JSON" \
+		git -C lfs-alternates/private \
+		-c "filter.lfs.process=\"$TRASH_DIRECTORY/record-lfs\" filter-process" \
+		switch -q --detach HEAD &&
+	test_must_be_empty calls &&
+	test_grep "\"category\":\"reflink-probe\".*\"key\":\"private-matches\",\"value\":\"5\"" trace.json &&
+	test_grep "\"category\":\"reflink-reshare\".*\"key\":\"scanned\",\"value\":\"5\"" trace.json &&
+	test_reflink_count alternate-index-read 1 trace.json &&
+	verify_hydrated lfs-alternates/private/file.lfs &&
+	test_shared lfs-alternates/donor/file.lfs lfs-alternates/private/file.lfs &&
+	git -C lfs-alternates/private status --porcelain >status &&
+	test_must_be_empty status
+'
+
 test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM 'LFS extension output, not the stored transformed data, is shared' '
 	git init -q extension &&
 	configure_lfs extension &&

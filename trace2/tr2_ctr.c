@@ -84,6 +84,18 @@ static struct tr2_counter_metadata tr2_counter_metadata[TRACE2_NUMBER_OF_COUNTER
 		.name = "scratch-donor",
 		.want_per_thread_events = 0,
 	},
+	[TRACE2_COUNTER_ID_REFLINK_ALTERNATE_ENUMERATION] = {
+		.category = "reflink",
+		.name = "alternate-enumeration",
+	},
+	[TRACE2_COUNTER_ID_REFLINK_ALTERNATE_INDEX] = {
+		.category = "reflink",
+		.name = "alternate-index-read",
+	},
+	[TRACE2_COUNTER_ID_REFLINK_ALTERNATE_LOOKUP] = {
+		.category = "reflink",
+		.name = "alternate-lookup",
+	},
 
 	/* Add additional metadata before here. */
 };
