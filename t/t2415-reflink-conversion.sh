@@ -274,6 +274,9 @@ test_expect_success 'setup same-size ident and historical filter donors' '
 		fi &&
 		rm "$src/control" "$src/file" "$src/zzz" &&
 		git -C "$src" checkout-index -fu --all &&
+		# The delay file is fixture scaffolding. Keep it out of donor
+		# selection regardless of its mtime or the index timestamp.
+		git -C "$src" update-index --skip-worktree zzz &&
 		git -C "$src" show HEAD:file >raw &&
 		test "$(wc -c <raw)" -eq "$(wc -c <"$src/file")" &&
 		! cmp -s raw "$src/file" || return 1
