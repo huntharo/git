@@ -941,19 +941,26 @@ static int reshare_index_entry(const struct cache_entry *ce)
 		!(ce->ce_flags & (CE_SKIP_WORKTREE | CE_INTENT_TO_ADD | CE_REMOVE));
 }
 
-static int open_reshare_target(struct repository *r, const struct cache_entry *ce,
-			       struct strbuf *path, struct stat *st)
+static int reshare_open_flags(void)
 {
-	int fd, flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK;
+	int flags = O_NOFOLLOW | O_NONBLOCK;
 
 #if defined(__linux__) && defined(O_NOATIME)
 	flags |= O_NOATIME;
 #endif
+	return flags;
+}
+
+static int open_reshare_target(struct repository *r, const struct cache_entry *ce,
+			       struct strbuf *path, struct stat *st)
+{
+	int fd;
+
 	strbuf_reset(path);
 	strbuf_addf(path, "%s/%s", r->worktree, ce->name);
 	if (!has_worktree_leading_dirs(path->buf, r->worktree))
 		return -1;
-	fd = open(path->buf, flags);
+	fd = open(path->buf, O_RDONLY | reshare_open_flags());
 	if (fd >= 0 && (fstat(fd, st) || !S_ISREG(st->st_mode))) {
 		close(fd);
 		return -1;
@@ -1330,7 +1337,7 @@ int reflink_reshare_worktree(struct repository *r,
 		total.eligible++;
 		result.deduplicated = before.st_size;
 #else
-		write_fd = open(path.buf, O_RDWR | O_NOFOLLOW | O_NONBLOCK | noatime);
+		write_fd = open(path.buf, O_RDWR | reshare_open_flags());
 		if (write_fd < 0 || fstat(write_fd, &after) || !same_file_stat(&before, &after)) {
 			result.reason = "target-unavailable";
 			goto record;

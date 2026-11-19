@@ -391,7 +391,8 @@ done
 test_expect_success RESHARE 'a genuinely racy target uses ordinary verification' '
 	test_when_finished remove_target &&
 	private_target &&
-	test-tool chmtime =+0 target/plain &&
+	# A future mtime is racy with both second and nanosecond indexes.
+	test-tool chmtime =+60 target/plain &&
 	git -C target add plain &&
 	git -C target worktree reflink --porcelain >out &&
 	test "$(summary_field content-checked out)" -ge 1 &&
