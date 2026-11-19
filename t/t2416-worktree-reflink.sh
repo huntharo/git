@@ -445,7 +445,9 @@ test_expect_success RESHARE 'checkout and switch leave private files below the r
 probe_target () {
 	git -C probe-source worktree add -q --no-reflink --detach ../probe-target all &&
 	test_when_finished "git -C probe-source worktree remove -f ../probe-target" &&
-	reflink_stable_source probe-target
+	reflink_stable_source probe-target &&
+	# Flush delayed Linux allocations before the intentionally unsynced probe.
+	test-tool reflink private-bytes probe-target >probe-target.usage
 }
 
 test_expect_success RESHARE 'setup a worktree larger than the repair sample' '
