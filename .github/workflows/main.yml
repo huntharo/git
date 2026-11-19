@@ -1,6 +1,19 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  # Test topic branches through the PR merge ref, including draft updates.
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - pwrgit
+      - master
+      - maint
+      - 'maint-*'
+      - next
+      - jch
+      - seen
+    tags: ['**']
 
 env:
   DEVELOPER: 1
@@ -63,10 +76,10 @@ jobs:
           fi
           echo "enabled=$enabled" >>$GITHUB_OUTPUT
           echo "skip_concurrent=$skip_concurrent" >>$GITHUB_OUTPUT
-      - name: skip if the commit or tree was already tested
+      - name: skip if an earlier push tested the commit or tree
         id: skip-if-redundant
         uses: actions/github-script@v9
-        if: steps.check-ref.outputs.enabled == 'yes'
+        if: github.event_name == 'push' && steps.check-ref.outputs.enabled == 'yes'
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
@@ -86,6 +99,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 per_page: 500,
+                event: 'push',
                 status: 'success',
                 workflow_id,
               });
