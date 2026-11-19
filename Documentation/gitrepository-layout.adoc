@@ -297,8 +297,8 @@ worktrees/<id>/locked::
 	explaining why the repository is locked.
 
 worktrees/<id>/reflink-source::
-	If this file exists, checkouts in the linked working tree create
-	unchanged files as copy-on-write clones (see `checkout.reflink` in
+	This file records the donor selection and enables hard reset to
+	re-share existing files (see `checkout.reflink` in
 	linkgit:git-config[1]). `git worktree add` writes it when using the
 	reflink default or when given `--reflink`. It contains `.` for the
 	main worktree, `worktrees/<id>` for a linked one, or an empty value

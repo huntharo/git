@@ -276,8 +276,8 @@ To remove a locked worktree, specify `--force` twice.
 When `checkout.reflink` is unset, `add` uses reflinks by default when
 it has a source. Both this default and `--reflink` record the source
 preference in the new worktree (see `worktrees/<id>/reflink-source`
-in linkgit:gitrepository-layout[5]), so later checkouts in it
-(`switch`, `reset`, `rebase`, `pull`, ...) can keep cloning.
+in linkgit:gitrepository-layout[5]). That marker also enables hard
+reset to re-share eligible files already on disk.
 `--reflink` and `--no-reflink` override `checkout.reflink` for the
 initial checkout. Cloning needs both worktrees on the same filesystem
 with reflink support (APFS on macOS or btrfs, XFS, bcachefs or overlayfs

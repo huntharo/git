@@ -545,7 +545,7 @@ int cmd_reset(int argc,
 
 	if (reset_type == HARD && !update_ref_status &&
 	    !git_env_bool("GIT_INTERNAL_WORKTREE_ADD_CHECKOUT", 0) &&
-	    reflink_checkout_enabled(the_repository)) {
+	    reflink_full_reshare_enabled(the_repository)) {
 		struct reflink_reshare_options opts = { .quiet = 1 };
 
 		/* A physical optimization must not alter reset's result or status. */

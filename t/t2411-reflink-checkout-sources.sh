@@ -715,11 +715,12 @@ test_expect_success 'bare repository: setup' '
 	reflink_stable_source bw1
 '
 
-test_expect_success 'bare repository: --reflink run from a linked worktree uses it' '
+test_expect_success 'bare repository: a valueless source falls back to the invoking linked worktree' '
 	test_when_finished "git -C bare.git worktree remove --force ../bw2" &&
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
-		git -C bw1 worktree add -q --reflink --detach ../bw2 maint 2>err &&
+		git -C bw1 -c checkout.reflinkSource \
+		worktree add -q --reflink --detach ../bw2 maint 2>err &&
 	test_must_be_empty err &&
 	test_source_file bw2 worktrees/bw1 &&
 	if test_have_prereq REFLINK

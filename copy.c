@@ -351,6 +351,63 @@ struct git_fiemap_header {
 #define GIT_FIEMAP_INLINE 0x200
 #define GIT_FIEMAP_SHARED 0x2000
 
+struct file_extent_usage {
+	uintmax_t private_bytes;
+	int shared;
+};
+
+static int get_file_extent_usage(int fd, uint32_t flags,
+				 struct file_extent_usage *usage)
+{
+	struct git_fiemap fm;
+	uint64_t start = 0;
+
+	memset(usage, 0, sizeof(*usage));
+	for (;;) {
+		uint64_t next = start;
+		int last = 0;
+
+		memset(&fm, 0, sizeof(fm));
+		fm.start = start;
+		fm.length = UINT64_MAX - start;
+		fm.flags = flags;
+		fm.extent_count = ARRAY_SIZE(fm.extents);
+		if (ioctl(fd, GIT_FIEMAP, &fm))
+			return -1;
+		if (!fm.mapped_extents)
+			return 0;
+		if (fm.mapped_extents > ARRAY_SIZE(fm.extents)) {
+			errno = EIO;
+			return -1;
+		}
+		for (size_t i = 0; i < fm.mapped_extents; i++) {
+			struct git_fiemap_extent *e = &fm.extents[i];
+
+			if (e->flags & (GIT_FIEMAP_UNKNOWN | GIT_FIEMAP_DELALLOC)) {
+				errno = ENOTSUP;
+				return -1;
+			}
+			if (e->flags & GIT_FIEMAP_SHARED)
+				usage->shared = 1;
+			else if (!(e->flags & GIT_FIEMAP_INLINE))
+				usage->private_bytes += e->length;
+			if (e->logical > UINT64_MAX - e->length) {
+				errno = EOVERFLOW;
+				return -1;
+			}
+			next = e->logical + e->length;
+			last |= !!(e->flags & GIT_FIEMAP_LAST);
+		}
+		if (last)
+			return 0;
+		if (next <= start) {
+			errno = EIO;
+			return -1;
+		}
+		start = next;
+	}
+}
+
 struct git_dedupe_range {
 	uint64_t src_offset, src_length;
 	uint16_t dest_count, reserved1;
@@ -402,58 +459,42 @@ int get_file_data_usage(int fd, struct file_data_usage *usage)
 	}
 #elif defined(__linux__)
 	{
-		struct git_fiemap fm;
-		uint64_t start = 0;
+		struct file_extent_usage extents;
 
-		for (;;) {
-			uint64_t next = start;
-			int last = 0;
-
-			memset(&fm, 0, sizeof(fm));
-			fm.start = start;
-			fm.length = UINT64_MAX - start;
-			fm.flags = GIT_FIEMAP_SYNC;
-			fm.extent_count = ARRAY_SIZE(fm.extents);
-			if (ioctl(fd, GIT_FIEMAP, &fm))
-				return -1;
-			if (!fm.mapped_extents)
-				break;
-			if (fm.mapped_extents > ARRAY_SIZE(fm.extents)) {
-				errno = EIO;
-				return -1;
-			}
-			for (size_t i = 0; i < fm.mapped_extents; i++) {
-				struct git_fiemap_extent *e = &fm.extents[i];
-
-				if (e->flags & (GIT_FIEMAP_UNKNOWN | GIT_FIEMAP_DELALLOC)) {
-					errno = ENOTSUP;
-					return -1;
-				}
-				if (!(e->flags & (GIT_FIEMAP_SHARED | GIT_FIEMAP_INLINE)))
-					usage->private_bytes += e->length;
-				if (e->logical > UINT64_MAX - e->length) {
-					errno = EOVERFLOW;
-					return -1;
-				}
-				next = e->logical + e->length;
-				last |= !!(e->flags & GIT_FIEMAP_LAST);
-			}
-			if (last)
-				break;
-			if (next <= start) {
-				errno = EIO;
-				return -1;
-			}
-			start = next;
-		}
-		if (fstat(fd, &st))
+		if (get_file_extent_usage(fd, GIT_FIEMAP_SYNC, &extents) ||
+		    fstat(fd, &st))
 			return -1;
 		usage->allocated = on_disk_bytes(st);
+		usage->private_bytes = extents.private_bytes;
 		return 0;
 	}
 #else
 	errno = ENOTSUP;
 	return -1;
+#endif
+}
+
+enum file_data_sharing get_file_data_sharing(int fd)
+{
+#if defined(__APPLE__)
+	struct file_data_usage usage;
+
+	if (get_file_data_usage(fd, &usage) || !usage.allocated)
+		return FILE_DATA_UNKNOWN;
+	return usage.private_bytes < usage.allocated ? FILE_DATA_SHARED : FILE_DATA_PRIVATE;
+#elif defined(__linux__)
+	struct file_extent_usage extents;
+
+	if (!can_dedupe_file_data(fd) || get_file_extent_usage(fd, 0, &extents))
+		return FILE_DATA_UNKNOWN;
+	if (extents.shared)
+		return FILE_DATA_SHARED;
+	if (extents.private_bytes)
+		return FILE_DATA_PRIVATE;
+	return FILE_DATA_UNKNOWN;
+#else
+	(void)fd;
+	return FILE_DATA_UNKNOWN;
 #endif
 }
 
