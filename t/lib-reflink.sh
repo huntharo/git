@@ -125,8 +125,8 @@ describe_tree () {
 }
 
 # test_same_as_checkout <dir> <commit-ish>: the worktree <dir> has
-# exactly the files, bytes, modes and index an ordinary
-# "git worktree add" of <commit-ish> produces, and is clean.
+# exactly the files, bytes, modes and index an add with --no-reflink
+# of <commit-ish> produces, and is clean.
 test_same_as_checkout () {
 	# clear one a failed earlier check left behind (no
 	# test_when_finished: some callers run this in a subshell)

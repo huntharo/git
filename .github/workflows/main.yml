@@ -1,6 +1,19 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  # Test topic branches through the PR merge ref, including draft updates.
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - pwrgit
+      - master
+      - maint
+      - 'maint-*'
+      - next
+      - jch
+      - seen
+    tags: ['**']
 
 env:
   DEVELOPER: 1
@@ -63,10 +76,10 @@ jobs:
           fi
           echo "enabled=$enabled" >>$GITHUB_OUTPUT
           echo "skip_concurrent=$skip_concurrent" >>$GITHUB_OUTPUT
-      - name: skip if the commit or tree was already tested
+      - name: skip if an earlier push tested the commit or tree
         id: skip-if-redundant
         uses: actions/github-script@v9
-        if: steps.check-ref.outputs.enabled == 'yes'
+        if: github.event_name == 'push' && steps.check-ref.outputs.enabled == 'yes'
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
@@ -86,6 +99,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 per_page: 500,
+                event: 'push',
                 status: 'success',
                 workflow_id,
               });
@@ -448,14 +462,16 @@ jobs:
       CC: ${{matrix.vector.cc}}
       CI_JOB_IMAGE: ${{matrix.vector.image}}
       CUSTOM_PATH: /custom
-    runs-on: ubuntu-latest
+    runs-on: >-
+      ${{ matrix.vector.jobname == 'linux32'
+          && 'ubuntu-24.04' || 'ubuntu-latest' }}
     container:
       image: ${{ matrix.vector.image }}
       options: ${{ github.repository_visibility == 'private' && '--pids-limit 16384 --ulimit nproc=16384:16384 --ulimit nofile=32768:32768' || '' }}
     steps:
     - name: prepare libc6 for actions
       if: matrix.vector.jobname == 'linux32'
-      run: apt -q update && apt -q -y install libc6-amd64 lib64stdc++6
+      run: apt-get -q update && apt-get -q -y install libc6-amd64 lib64stdc++6
     - name: install git in container
       run: |
         if command -v git

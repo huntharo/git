@@ -873,10 +873,10 @@ test_expect_success NODATACOW 'cloning is given up after 16 failures in a row' '
 other_fs_test () {
 	other=$1 &&
 
-	# the recipient is on the other filesystem
+	# default sharing falls back when the recipient is on another filesystem
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
-		git worktree add -q --reflink --detach "$other/wt" v2 2>err &&
+		git worktree add -q --detach "$other/wt" v2 2>err &&
 	test_must_be_empty err &&
 	test_reflink_count cloned 0 trace.json &&
 	test_reflink_count verify-failed 0 trace.json &&
@@ -933,7 +933,15 @@ detach_image () {
 		hdiutil detach -quiet "$1" 2>/dev/null && return 0
 		sleep $delay
 	done
-	hdiutil detach -quiet -force "$1"
+	if hdiutil detach -force "$1"
+	then
+		return 0
+	fi
+	# A concurrent unmount may make detach fail after the volume is gone.
+	# Never remove a still-mounted volume: verify it is back on our device.
+	image_device=$(stat -f %d "$1") &&
+	trash_device=$(stat -f %d "$TRASH_DIRECTORY") &&
+	test "$image_device" = "$trash_device"
 }
 
 # On macOS, a disk image is another filesystem. Creating and attaching
@@ -978,5 +986,32 @@ test_expect_success SHM_OTHER_FS 'reflink source on another filesystem (/dev/shm
 	test_when_finished "rm -rf \"$other\"" &&
 	other_fs_test "$other"
 '
+
+for workers in 1 8
+do
+	test_expect_success REFLINK,SYMLINKS "checkout rejects a symlinked donor parent ($workers workers)" '
+		test_when_finished "rm -rf path-source path-target outside-dir" &&
+		git init -q path-source &&
+		git -C path-source config checkout.reflink false &&
+		mkdir path-source/dir &&
+		make_blob_file path-source/dir/file 64 &&
+		git -C path-source add . &&
+		git -C path-source commit -qm nested &&
+		reflink_stable_source path-source &&
+		mv path-source/dir outside-dir &&
+		ln -s ../outside-dir path-source/dir &&
+		test-tool reflink metadata outside-dir/file >before.stat &&
+		test-tool reflink private-bytes outside-dir/file >before.usage &&
+		git -C path-source -c checkout.workers=$workers \
+			-c checkout.thresholdForParallelism=0 worktree add -q --detach \
+			--reflink ../path-target &&
+		test-tool reflink metadata outside-dir/file >after.stat &&
+		test-tool reflink private-bytes outside-dir/file >after.usage &&
+		test_cmp before.stat after.stat &&
+		test_cmp before.usage after.usage &&
+		test_cmp outside-dir/file path-target/dir/file &&
+		test_not_shared outside-dir/file path-target/dir/file
+	'
+done
 
 test_done

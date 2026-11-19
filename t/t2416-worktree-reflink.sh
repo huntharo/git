@@ -75,7 +75,10 @@ test_expect_success 'porcelain dry-run preserves bytes and metadata on every bac
 	describe_tree target >after.tree &&
 	test_cmp before.tree after.tree &&
 	test_grep "^reflink 1$" out &&
-	test_field scanned 3 out &&
+	if test_have_prereq REFLINK_BUILD
+	then test_field scanned 3 out
+	else test_field scanned 0 out
+	fi &&
 	test_field reshared 0 out &&
 	test_field observed-private-reduction 0 out &&
 	test_not_shared source/plain target/plain &&
@@ -89,7 +92,10 @@ test_expect_success 'NUL porcelain supports a target worktree argument' '
 	tr "\\000" "\\n" <out >lines &&
 	test_grep "^reflink 1$" lines &&
 	test_grep "^dry-run 1$" lines &&
-	test_field scanned 3 lines
+	if test_have_prereq REFLINK_BUILD
+	then test_field scanned 3 lines
+	else test_field scanned 0 lines
+	fi
 '
 
 for workers in 1 8
@@ -203,7 +209,10 @@ test_expect_success 'unsupported backend explicitly reports safe skips' '
 	metadata >after.stat &&
 	test_cmp before.stat after.stat &&
 	test_grep "^backend unsupported$" out &&
-	test_grep "^reason unsupported-safe-dedupe$" out &&
+	if test_have_prereq REFLINK_BUILD
+	then test_grep "^reason unsupported-safe-dedupe$" out
+	else test_field scanned 0 out
+	fi &&
 	test_field reshared 0 out &&
 	test_not_shared source/plain target/plain
 '
@@ -486,5 +495,59 @@ test_expect_success RESHARE,SYMLINKS 'tracked symlinks and gitlinks are skipped 
 	test_path_is_dir entries-target/sub &&
 	test_shared entries-source/plain entries-target/plain
 '
+
+test_expect_success MACOS,RESHARE 'hard-reset repair retains staging completed after reset publishes its index' '
+	test_when_finished remove_target &&
+	private_target &&
+	cc -Wall -Wextra -Werror -dynamiclib \
+		"$TEST_DIRECTORY/lib-reflink/reset-interpose.c" -o reset-interpose.dylib &&
+	echo staged >target/staged &&
+	index=$(git -C target rev-parse --path-format=absolute --git-path index) &&
+	DYLD_INSERT_LIBRARIES="$TRASH_DIRECTORY/reset-interpose.dylib" \
+	GIT_TEST_REFLINK_INDEX="$index" GIT_TEST_REFLINK_GIT="$GIT_BUILD_DIR/git" \
+	"$GIT_BUILD_DIR/git" -C target -c checkout.reflink=true reset -q --hard 2>err &&
+	test_grep "^cooperating git add completed$" err &&
+	git -C target ls-files --stage -- staged >actual.stage &&
+	oid=$(git -C target hash-object staged) &&
+	printf "100644 %s 0\tstaged\n" "$oid" >expect.stage &&
+	test_cmp expect.stage actual.stage &&
+	git -C target status --porcelain -- staged >actual.status &&
+	echo "A  staged" >expect.status &&
+	test_cmp expect.status actual.status &&
+	test_shared source/plain target/plain
+'
+
+for side in target source
+do
+	test_expect_success RESHARE,SYMLINKS "re-sharing rejects a symlinked $side parent" '
+		test_when_finished "rm -rf path-source path-target outside-dir" &&
+		git init -q path-source &&
+		git -C path-source config checkout.reflink false &&
+		mkdir path-source/dir &&
+		make_blob_file path-source/dir/file 64 &&
+		git -C path-source add . &&
+		git -C path-source commit -qm nested &&
+		reflink_stable_source path-source &&
+		git -C path-source worktree add -q --detach --no-reflink ../path-target &&
+		reflink_stable_source path-target &&
+		mv path-$side/dir outside-dir &&
+		ln -s ../outside-dir path-$side/dir &&
+		test-tool reflink metadata outside-dir/file >before.stat &&
+		test-tool reflink private-bytes outside-dir/file >before.usage &&
+		git -C path-target worktree reflink --porcelain >out &&
+		test-tool reflink metadata outside-dir/file >after.stat &&
+		test-tool reflink private-bytes outside-dir/file >after.usage &&
+		test_cmp before.stat after.stat &&
+		test_cmp before.usage after.usage &&
+		test_field reshared 0 out &&
+		if test "$side" = target
+		then
+			test_grep "^reason target-unavailable$" out
+		else
+			test_grep "^reason no-donor$" out
+		fi
+	'
+done
+
 
 test_done

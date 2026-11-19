@@ -8,7 +8,8 @@ The following variables can be used:
 
  - CI_BRANCHES
 
-   By default, CI is run when any branch is pushed. If this variable is
-   non-empty, then only the branches it lists will run CI. Branch names
-   should be separated by spaces, and should use their shortened form
-   (e.g., "main", not "refs/heads/main").
+   The CI workflow runs on pull request updates (including drafts), and
+   on pushes to the integration and release branches listed in the
+   workflow, and on tag pushes. A non-empty CI_BRANCHES further
+   restricts these runs by ref name. Use shortened names separated by spaces
+   (e.g., "pwrgit", "v2.56.0", or "31/merge").

@@ -301,7 +301,14 @@ static int write_entry(struct cache_entry *ce, char *path, struct conv_attrs *ca
 	clone_checkout_metadata(&meta, &state->meta, &ce->oid);
 
 	if (ce_mode_s_ifmt == S_IFREG) {
-		struct stream_filter *filter = get_stream_filter_ca(ca, &ce->oid);
+		struct stream_filter *filter;
+
+		if (!to_tempfile && !ca->drv && !ca->working_tree_encoding &&
+		    !reflink_checkout_entry(ce, ca, state, path, NULL, 0,
+					    &st, &fstat_done))
+			goto finish;
+
+		filter = get_stream_filter_ca(ca, &ce->oid);
 		if (filter &&
 		    !streaming_write_entry(ce, path, filter,
 					   state, to_tempfile,
@@ -377,6 +384,19 @@ static int write_entry(struct cache_entry *ce, char *path, struct conv_attrs *ca
 		 * point. If the error would have been fatal (e.g.
 		 * filter is required), then we would have died already.
 		 */
+
+		/*
+		 * Use the completed conversion as the oracle, including optional
+		 * filter fallback. A delayed filter reaches here only when Git
+		 * has retrieved its output, and a required failure already died.
+		 * On a clone miss, use the same buffer for the ordinary write.
+		 */
+		if (!to_tempfile && (ca->drv || ca->working_tree_encoding) &&
+		    !reflink_checkout_entry(ce, ca, state, path, new_blob, size,
+					    &st, &fstat_done)) {
+			free(new_blob);
+			goto finish;
+		}
 
 	write_file_entry:
 		fd = open_output_fd(path, ce, to_tempfile);
@@ -589,23 +609,6 @@ int checkout_entry_ca(struct cache_entry *ce, struct conv_attrs *ca,
 
 	if (!enqueue_checkout(ce, ca, nr_checkouts))
 		return 0;
-
-	if (S_ISREG(ce->ce_mode)) {
-		int fstat_done = 0;
-
-		if (!reflink_checkout_entry(ce, ca, state, path.buf,
-					    &st, &fstat_done)) {
-			if (state->refresh_cache) {
-				if (!fstat_done && lstat(ce->name, &st) < 0)
-					return error_errno("unable to stat just-written file %s",
-							   ce->name);
-				update_ce_after_write(state, ce, &st);
-			}
-			if (nr_checkouts)
-				(*nr_checkouts)++;
-			return 0;
-		}
-	}
 
 	return write_entry(ce, path.buf, ca, state, 0, nr_checkouts);
 }

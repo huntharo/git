@@ -8,7 +8,7 @@
 begin_group "Install dependencies"
 
 P4WHENCE=https://cdist2.perforce.com/perforce/r23.2
-LFSWHENCE=https://github.com/github/git-lfs/releases/download/v$LINUX_GIT_LFS_VERSION
+LFSWHENCE=https://github.com/git-lfs/git-lfs/releases/download/v$LINUX_GIT_LFS_VERSION
 JGITWHENCE=https://repo1.maven.org/maven2/org/eclipse/jgit/org.eclipse.jgit.pgm/6.8.0.202311291450-r/org.eclipse.jgit.pgm-6.8.0.202311291450-r.sh
 CARGO_MSRV_VERSION=0.18.4
 CARGO_MSRV_WHENCE=https://github.com/foresterre/cargo-msrv/releases/download/v$CARGO_MSRV_VERSION/cargo-msrv-x86_64-unknown-linux-musl-v$CARGO_MSRV_VERSION.tgz
@@ -84,7 +84,8 @@ ubuntu-*|i386/ubuntu-*|debian-*)
 	# See <https://github.com/uutils/coreutils/issues/10508>.
 	if test -x /usr/bin/gnudirname
 	then
-		ln -sfT /usr/bin/gnudirname /usr/bin/dirname
+		sudo rm -f /usr/bin/dirname &&
+		sudo ln -s /usr/bin/gnudirname /usr/bin/dirname
 	fi
 
 	case "$distro" in
@@ -99,13 +100,15 @@ ubuntu-*|i386/ubuntu-*|debian-*)
 			rm -f "$CUSTOM_PATH/p4d"
 		}
 
-		wget --quiet \
-		     "$LFSWHENCE/git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz" &&
-		tar -xzf "git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz" \
+		lfs_archive="git-lfs-linux-amd64-v$LINUX_GIT_LFS_VERSION.tar.gz"
+		wget --quiet --output-document="$lfs_archive" "$LFSWHENCE/$lfs_archive" &&
+		printf '%s  %s\n' "$LINUX_GIT_LFS_SHA256" "$lfs_archive" |
+			sha256sum --check &&
+		tar -xzf "$lfs_archive" \
 			-C "$CUSTOM_PATH" --strip-components=1 \
-			"git-lfs-$LINUX_GIT_LFS_VERSION/git-lfs" &&
-		rm "git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz" ||
-		rm -f "$CUSTOM_PATH/git-lfs"
+			"git-lfs-$LINUX_GIT_LFS_VERSION/git-lfs" ||
+			rm -f "$CUSTOM_PATH/git-lfs"
+		rm -f "$lfs_archive"
 
 		wget --quiet "$JGITWHENCE" --output-document="$CUSTOM_PATH/jgit" &&
 		chmod a+x "$CUSTOM_PATH/jgit" ||

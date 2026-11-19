@@ -5,7 +5,7 @@
  * Copy-on-write ("reflink") checkout: when checkout is about to write a
  * regular file, clone it from another worktree of the same repository
  * (the "reflink source") instead, using its index's normal stat trust
- * model to select non-racy donors. EOL output additionally requires comparison
+ * model to select non-racy donors. Every cloned snapshot is compared
  * with the recipient's ordinary checkout output. See the limitations in
  * Documentation/technical/reflink-checkout.adoc.
  */
@@ -28,6 +28,9 @@ struct repository;
 /*
  * Try to create "path" for the regular-file entry "ce" by cloning it.
  * "ca" must be the conversion attributes for "ce". "path" must not exist.
+ * If "output" is supplied, compare against these "output_size" bytes from
+ * the ordinary writer. Otherwise derive the expected output without running
+ * an external filter or encoding conversion.
  *
  * Returns 0 if "path" was cloned from an eligible donor, with the mode,
  * owner and timestamps of a newly written file. In that case
@@ -44,6 +47,7 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 			   const struct conv_attrs *ca,
 			   const struct checkout *state,
 			   const char *path,
+			   const char *output, size_t output_size,
 			   struct stat *st, int *fstat_done);
 
 /*
@@ -68,7 +72,11 @@ struct reflink_reshare_options {
 /* Production config/marker enablement, including the explicit false switch. */
 int reflink_checkout_enabled(struct repository *r);
 
-/* Explicit physical optimization; never changes logical bytes or the index. */
+/*
+ * Explicit physical optimization; preserves logical bytes and index entries.
+ * APFS reloads the index under its own lock and records replacement stat data.
+ * Callers must have published any pending index changes before calling.
+ */
 int reflink_reshare_worktree(struct repository *r,
 			     const struct reflink_reshare_options *opts);
 

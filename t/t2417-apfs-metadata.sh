@@ -9,13 +9,13 @@ test_lazy_prereq PYTHON3 '
 '
 
 test_expect_success MACOS,PYTHON3,REFLINK 'native allocation oracle and clone repair metadata' '
-	python3 "$GIT_BUILD_DIR/contrib/reflink/apfs-metadata.py" \
+	python3 "${TEST_DIRECTORY%/t}/contrib/reflink/apfs-metadata.py" \
 		--after "$GIT_BUILD_DIR" --root "$TRASH_DIRECTORY/native-fixture" \
 		--validate-only
 '
 
 test_expect_success MACOS,PYTHON3,REFLINK 're-share ignores only kernel provenance and verifies copied metadata' '
-	python3 "$GIT_BUILD_DIR/contrib/reflink/apfs-reshare-provenance.py" \
+	python3 "${TEST_DIRECTORY%/t}/contrib/reflink/apfs-reshare-provenance.py" \
 		--build "$GIT_BUILD_DIR" --root "$TRASH_DIRECTORY/reshare-fixture"
 '
 
