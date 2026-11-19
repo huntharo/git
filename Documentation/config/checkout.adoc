@@ -64,6 +64,13 @@ well the parallel version performs.
 	on Windows, files are silently written as usual. See
 	linkgit:git-worktree[1].
 +
+After a successful `switch` or branch checkout with a usable donor,
+Git samples up to 50 entries from the resulting index. If a sampled
+file already shares blocks, Git skips the repair pass. Otherwise,
+five private, stat-clean files with matching donor entries and file
+sizes trigger `worktree reflink` over the worktree. The sample uses
+metadata. The repair still verifies actual bytes before sharing.
++
 A successful `reset --hard` also runs `worktree reflink` over eligible existing
 files if `checkout.reflink` is true, or if it is unset and the worktree has a
 reflink-source marker. This can re-share clean private files that ordinary reset
@@ -73,8 +80,8 @@ unsupported cases; failures warn without undoing or failing the completed
 reset. It incurs metadata scanning and, for private candidates, kernel
 comparison on Linux or clone/byte-comparison/replacement on APFS. APFS has the
 file-replacement concurrency limits documented in linkgit:git-worktree[1].
-`reset --soft`, `reset --mixed` and no-op checkout/switch do not request this
-repair pass. Explicit false overrides a worktree's reflink-source marker.
+Explicit false overrides a worktree's reflink-source marker and disables
+the checkout sample.
 Commands such as `git lfs checkout` and `git lfs pull` write through Git LFS
 itself. To share those existing files, use `git worktree reflink` after
 writers quiesce or let a subsequent reflink-enabled hard reset repair

@@ -419,7 +419,7 @@ test_expect_success RESHARE 'an explicit source overrides a stale configured sou
 	test "$(git -C source config checkout.reflinkSource)" = missing
 '
 
-test_expect_success RESHARE 'no-op checkout and switch leave private files untouched' '
+test_expect_success RESHARE 'checkout and switch leave private files below the repair threshold' '
 	test_when_finished remove_target &&
 	private_target &&
 	git -C source config checkout.reflink true &&
@@ -428,6 +428,82 @@ test_expect_success RESHARE 'no-op checkout and switch leave private files untou
 	test_not_shared source/plain target/plain &&
 	git -C target reset -q --hard &&
 	test_shared source/plain target/plain
+'
+
+probe_target () {
+	git -C probe-source worktree add -q --no-reflink --detach ../probe-target all &&
+	test_when_finished "git -C probe-source worktree remove -f ../probe-target" &&
+	reflink_stable_source probe-target
+}
+
+test_expect_success RESHARE 'setup a worktree larger than the repair sample' '
+	git init -q -b all probe-source &&
+	for i in $(test_seq 0 59)
+	do
+		name=$(printf "file-%02d" "$i") &&
+		make_blob_file "probe-source/$name" 16 || return 1
+	done &&
+	git -C probe-source add . &&
+	git -C probe-source commit -qm all &&
+	reflink_stable_source probe-source
+'
+
+for operation in switch checkout
+do
+	test_expect_success RESHARE "$operation repairs the full tree when the sample finds matching private files" '
+		probe_target &&
+		test_not_shared probe-source/file-05 probe-target/file-05 &&
+		rm -f trace.json &&
+		GIT_TRACE2_EVENT="$TRACE_JSON" \
+			git -C probe-target "$operation" -q --detach HEAD &&
+		# file-05 lies between sampled index positions.
+		test_shared probe-source/file-05 probe-target/file-05 &&
+		test_grep "\"category\":\"reflink-probe\".*\"key\":\"sampled\",\"value\":\"50\"" trace.json &&
+		test_grep "\"category\":\"reflink-reshare\".*\"key\":\"scanned\",\"value\":\"60\"" trace.json &&
+		git -C probe-target status --porcelain >status &&
+		test_must_be_empty status
+	'
+done
+
+test_expect_success RESHARE 'one shared file at the end of the sample suppresses repair' '
+	probe_target &&
+	rm probe-target/file-59 &&
+	git -C probe-target checkout -- file-59 &&
+	test_shared probe-source/file-59 probe-target/file-59 &&
+	rm -f trace.json &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" git -C probe-target switch -q --detach HEAD &&
+	test_grep "\"category\":\"reflink-probe\".*\"key\":\"shared\",\"value\":\"1\"" trace.json &&
+	test_grep ! "\"category\":\"reflink-reshare\"" trace.json &&
+	test_not_shared probe-source/file-05 probe-target/file-05
+'
+
+test_expect_success RESHARE 'explicit false suppresses the probe and repair' '
+	probe_target &&
+	rm -f trace.json &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" \
+		git -C probe-target -c checkout.reflink=false switch -q --detach HEAD &&
+	test_grep ! "\"category\":\"reflink-probe\"" trace.json &&
+	test_not_shared probe-source/file-05 probe-target/file-05
+'
+
+test_expect_success RESHARE 'five matched donors in a large sample trigger repair, four do not' '
+	probe_target &&
+	test_when_finished "git -C probe-source switch -q all && reflink_stable_source probe-source" &&
+	git -C probe-source switch -qc few &&
+	git -C probe-source rm -q -- "file-0[4-9]" "file-[1-5][0-9]" &&
+	git -C probe-source commit -qm few &&
+	reflink_stable_source probe-source &&
+	rm -f trace.json &&
+	GIT_TRACE2_EVENT="$TRACE_JSON" git -C probe-target switch -q --detach HEAD &&
+	test_grep "\"category\":\"reflink-probe\".*\"key\":\"private-matches\",\"value\":\"4\"" trace.json &&
+	test_grep ! "\"category\":\"reflink-reshare\"" trace.json &&
+	test_not_shared probe-source/file-00 probe-target/file-00 &&
+
+	git -C probe-source checkout all -- file-04 &&
+	git -C probe-source commit -qm fifth &&
+	reflink_stable_source probe-source &&
+	git -C probe-target switch -q --detach HEAD &&
+	test_shared probe-source/file-04 probe-target/file-04
 '
 
 test_expect_success RESHARE 'hard reset retains a concurrent ordinary edit detected by repair' '

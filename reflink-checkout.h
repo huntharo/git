@@ -72,6 +72,9 @@ struct reflink_reshare_options {
 /* Full automatic re-sharing requires a marker or explicit enablement. */
 int reflink_full_reshare_enabled(struct repository *r);
 
+/* Sample the checked-out index and re-share if enough private files match. */
+int reflink_maybe_reshare_worktree(struct repository *r);
+
 /*
  * Explicit physical optimization; preserves logical bytes and index entries.
  * APFS reloads the index under its own lock and records replacement stat data.

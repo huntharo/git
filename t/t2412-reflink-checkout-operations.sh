@@ -116,7 +116,8 @@ test_expect_success REFLINK 'unmarked worktree clones files written by switch, c
 	test_path_is_missing .git/worktrees/wt-unmarked/reflink-source &&
 
 	traced git -C wt-unmarked switch -q --detach HEAD &&
-	test_grep ! "\"category\":\"reflink" trace.json &&
+	test_reflink_count cloned 0 trace.json &&
+	test_grep ! "\"category\":\"reflink-reshare\"" trace.json &&
 
 	git -C wt-unmarked switch -q --detach src &&
 	shared_with_source wt-unmarked a b c &&

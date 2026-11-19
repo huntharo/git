@@ -20,11 +20,20 @@ Successful explicit `reset --hard` also invokes this engine when
 `checkout.reflink` is true or when it is unset and the worktree has a source
 marker. Explicit false overrides the source marker. The pass
 preserves ordinary reset's resulting bytes and exit status; operational
-failures warn, and unsupported cases skip. Soft/mixed reset and no-op
-checkout/switch retain their previous behavior. Initial worktree creation
-already uses checkout's clone hook: its internal reset is marked through a
-private child environment variable and does not perform an additional repair
-scan. This avoids charging fresh checkout for the existing-file operation.
+failures warn, and unsupported cases skip. Initial worktree creation uses
+checkout's clone hook and marks its internal reset through a private child
+environment variable to skip the repair scan.
+
+After a successful switch or branch checkout, a metadata probe samples up
+to 50 evenly spaced index entries when there is a usable donor. Any sampled
+file with shared allocation ends the probe. If five sampled private files
+are stat-clean and have eligible donors with matching index blob IDs and
+sizes, the probe can stop looking up donors while it finishes checking
+allocation in the rest of the sample. A sample with five matches and no
+shared file triggers the usual repair engine, including its byte checks
+and APFS writer-quiescence limits. The sample estimates whether the scan
+will recover storage. A largely private tree can still contain a sampled
+shared file, and matching metadata can refer to different physical bytes.
 
 Eligibility and integrity
 -------------------------

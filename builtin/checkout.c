@@ -25,6 +25,7 @@
 #include "path.h"
 #include "preload-index.h"
 #include "read-cache.h"
+#include "reflink-checkout.h"
 #include "refs.h"
 #include "remote.h"
 #include "repo-settings.h"
@@ -1317,6 +1318,9 @@ static int switch_branches(const struct checkout_opts *opts,
 	}
 
 	ret = post_checkout_hook(old_branch_info.commit, new_branch_info->commit, 1);
+	if (!ret && !writeout_error && new_branch_info->commit &&
+	    reflink_maybe_reshare_worktree(the_repository))
+		warning(_("checkout completed, but worktree re-sharing was incomplete"));
 	branch_info_release(&old_branch_info);
 	strbuf_release(&old_commit_shortname);
 	strbuf_release(&autostash_msg);
