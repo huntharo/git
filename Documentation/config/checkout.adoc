@@ -55,9 +55,11 @@ well the parallel version performs.
 	If false, cloning is disabled, even in worktrees created with
 	`git worktree add --reflink` (only that command's own initial
 	checkout still clones).
-	If unset, worktrees created with `--reflink` clone and others do
-	not. A value that is not a boolean disables cloning, with a
-	warning. Cloning is supported on APFS (macOS) and on btrfs, XFS,
+	If unset, `git worktree add` enables cloning in the new linked
+	worktree when it has a source, unless `--no-reflink` is given.
+	Later commands clone in worktrees with a reflink-source marker.
+	A value that is not a boolean disables cloning, with a warning.
+	Cloning is supported on APFS (macOS) and on btrfs, XFS,
 	bcachefs and overlayfs (Linux); elsewhere, across filesystems, and
 	on Windows, files are silently written as usual. See
 	linkgit:git-worktree[1].

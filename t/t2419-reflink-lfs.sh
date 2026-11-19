@@ -46,9 +46,9 @@ lfs_pair () {
 	do
 		case $wt in
 		ordinary) option=--no-reflink ;;
-		shared) option=--reflink-source=. ;;
+		shared) option= ;;
 		esac &&
-		git -C source "$@" worktree add -q --detach "$option" "../$wt" \
+		git -C source "$@" worktree add -q --detach ${option:+"$option"} "../$wt" \
 			2>"$wt.err" || return 1
 	done &&
 	test_cmp "ordinary/$asset" "shared/$asset" &&

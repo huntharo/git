@@ -873,10 +873,10 @@ test_expect_success NODATACOW 'cloning is given up after 16 failures in a row' '
 other_fs_test () {
 	other=$1 &&
 
-	# the recipient is on the other filesystem
+	# default sharing falls back when the recipient is on another filesystem
 	rm -f trace.json &&
 	GIT_TRACE2_EVENT="$TRACE_JSON" \
-		git worktree add -q --reflink --detach "$other/wt" v2 2>err &&
+		git worktree add -q --detach "$other/wt" v2 2>err &&
 	test_must_be_empty err &&
 	test_reflink_count cloned 0 trace.json &&
 	test_reflink_count verify-failed 0 trace.json &&
