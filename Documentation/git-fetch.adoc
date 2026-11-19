@@ -214,6 +214,38 @@ of the form:
 <flag> <old-object-id> <new-object-id> <local-reference>
 -------------------------------
 
+With `--tag-differences`, additional machine-readable records describe tags
+whose advertised object IDs differ from their local object IDs. Fields are
+separated by tabs, and each record ends with a newline:
+
+-------------------------------
+# tag-difference<TAB><remote><TAB><local-object-id><TAB><remote-object-id><TAB><tag-reference>
+-------------------------------
+
+The remote is the configured remote name, C-style quoted when necessary.
+Direct URL/path fetches do not produce these records. Tag references include
+`refs/tags/`. Matching tags, branches, and peeled `^{}` entries are omitted.
+For annotated tags, the tag object IDs are compared, so a re-created tag is
+reported even when its peeled target is unchanged. No timestamps or ancestry
+are inferred, and the remote objects need not be present locally.
+
+By default only existing local tags are compared. With
+`--tag-differences=all`, advertised names absent locally are also reported,
+using an all-zero local object ID. These are remote-only tags, not necessarily
+recently created tags. There is no count limit or implied chronological order.
+Tags absent from the advertisement cannot be reported; this is not a report
+of remote tag deletions. No additional refs or objects are requested, so
+protocol v2 with `--no-tags` normally produces no tag records.
+
+Comparison and output happen immediately after the initial advertisement,
+before ref updates or pack transfer. Thus records describe the pre-fetch
+local tags and are available even if pack transfer later fails. The option
+also works with `--all`, `--multiple`, and linkgit:git-pull[1]. Single-remote
+fetches write to standard output; Git's grouped parallel fetch forwards
+child output, including these records, to standard error. Consumers handling
+parallel fetches should capture both streams. Pull may additionally print
+ordinary merge or rebase output.
+
 The status of up-to-date refs is shown only if the `--verbose` option is
 used.
 
