@@ -69,7 +69,7 @@ static void *preload_thread(void *_data)
 			continue;
 		if (ce_skip_worktree(ce))
 			continue;
-		if (ce->ce_flags & CE_FSMONITOR_VALID)
+		if (ce_fsmonitor_valid(ce))
 			continue;
 		if (p->progress && !(nr & 31)) {
 			struct progress_data *pd = p->progress;

@@ -43,7 +43,7 @@ static int check_removed(const struct cache_entry *ce, struct stat *st)
 {
 	int stat_err;
 
-	if (!(ce->ce_flags & CE_FSMONITOR_VALID))
+	if (!ce_fsmonitor_valid(ce))
 		stat_err = lstat(ce->name, st);
 	else
 		stat_err = fake_lstat(ce, st);
@@ -243,7 +243,7 @@ void run_diff_files(struct rev_info *revs, unsigned int option)
 		 * we do not have to stat to see if the path has been removed
 		 * or modified.
 		 */
-		if (ce->ce_flags & (CE_VALID | CE_FSMONITOR_VALID)) {
+		if ((ce->ce_flags & CE_VALID) || ce_fsmonitor_valid(ce)) {
 			changed = 0;
 			newmode = ce->ce_mode;
 		} else {

@@ -162,6 +162,7 @@ ifeq ($(uname_S),Darwin)
 	USE_ENHANCED_BASIC_REGULAR_EXPRESSIONS = YesPlease
 	HAVE_PLATFORM_PROCINFO = YesPlease
 	COMPAT_OBJS += compat/darwin/procinfo.o
+	HAVE_STAT_GEN_COUNT = YesPlease
 
         ifeq ($(uname_M),arm64)
 		HOMEBREW_PREFIX = /opt/homebrew

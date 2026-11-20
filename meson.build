@@ -1297,6 +1297,8 @@ endif
 
 if host_machine.system() == 'darwin'
   compat_sources += 'compat/precompose_utf8.c'
+  compat_sources += 'compat/darwin/stat.c'
+  libgit_c_args += '-DHAVE_STAT_GEN_COUNT'
   libgit_c_args += '-DPRECOMPOSE_UNICODE'
   libgit_c_args += '-DPROTECT_HFS_DEFAULT'
 endif
