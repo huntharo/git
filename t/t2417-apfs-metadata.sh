@@ -13,4 +13,9 @@ test_expect_success MACOS,PYTHON3,REFLINK 'native allocation oracle and clone re
 		--after "$GIT_BUILD_DIR" --root "$TRASH_DIRECTORY/native-fixture"
 '
 
+test_expect_success MACOS,PYTHON3,REFLINK 're-share ignores only kernel provenance and verifies copied metadata' '
+	python3 "$TEST_DIRECTORY/lib-reflink/apfs-reshare-provenance.py" \
+		--build "$GIT_BUILD_DIR" --root "$TRASH_DIRECTORY/reshare-fixture"
+'
+
 test_done

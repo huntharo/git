@@ -327,6 +327,7 @@ integration_tests = [
   't2413-reflink-checkout-attributes.sh',
   't2414-reflink-stat.sh',
   't2415-reflink-conversion.sh',
+  't2416-worktree-reflink.sh',
   't2417-apfs-metadata.sh',
   't2418-reflink-alternate-donors.sh',
   't2500-untracked-overwriting.sh',

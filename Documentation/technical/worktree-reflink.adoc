@@ -1,0 +1,86 @@
+Existing-worktree re-sharing
+=============================
+
+`git worktree reflink` is an explicit physical optimization for tracked files
+already present in a worktree. Unlike checkout creation, it preserves their
+actual historical representation instead of applying current conversions.
+The command does not enable future clone checkout. See git-worktree(1) for
+source selection, options, versioned output and accounting units.
+
+Eligibility
+-----------
+
+Skip missing/nonregular/unmerged/sparse/intent-to-add files, hardlinked targets,
+and symlinked or non-directory parents below source and target worktree roots.
+Allocation queries identify fully shared files before object reads, conversion,
+comparison or donor lookup. These files are left untouched.
+
+For private candidates, ordinary stat/racy checks establish dirty eligibility.
+Known mode/type/size changes skip immediately. Ambiguous target stat requires
+ordinary content verification; external-filter/encoding ambiguity skips. A
+candidate donor has the same index object ID and passes descriptor stat/racy
+checks. Actual data equality is established by the selected backend.
+
+Linux compare-and-share
+-----------------------
+
+FIDEDUPERANGE compares actual bytes and shares equal ranges under kernel
+synchronization. Requests are bounded to 16 MiB. A prefix may be shared before
+a later mismatch or error, but logical bytes and the target inode are retained.
+Shared-range bytes are work performed, not a claim about volume free space.
+
+APFS replacement
+----------------
+
+APFS cloning requires an absent destination. Create a clone in a private
+temporary directory beside the target, compare it with the opened target, copy
+and verify target metadata, and recheck observed descriptor/path identities
+before publishing it by rename. Special flags and set-ID targets skip.
+
+Preserve owner/group, mode, birth/access/modification times, ACLs and xattrs.
+Ignore exactly the kernel-managed com.apple.provenance name, whose value or
+presence can differ on a new inode after successful metadata copying. All
+other names and values, including quarantine and similarly prefixed names,
+must match. Do not strip or forge provenance.
+
+The inode and ctime change. Acquire the index lock and reload current entries
+under that lock before scanning; a caller may have already published and
+unlocked an earlier index. Record the replacement's actual stat with ordinary
+checkout bookkeeping and write it under the same lock. Never overwrite a
+cooperating process's completed staging with a pre-lock index snapshot.
+
+Checks detect observed ordinary writes and replacements, but do not close the
+interval between the last check and rename. Retained writable descriptors and
+mappings still refer to the old inode. Do not use replacement while such
+writers are active. Read-only object/pack mappings are unrelated. Linux's
+in-place guarantee is stronger; APFS does not claim arbitrary active-writer
+or concurrent parent-directory replacement safety.
+
+Dry-run compares data but does not test APFS metadata copying. Eligibility and
+potential reduction are estimates; apply may still skip metadata it cannot
+preserve. Allocation reduction is not a promise of volume free-space recovery.
+
+Enabled hard reset
+------------------
+
+After a successful explicit hard reset with effective reflink enablement, the
+same scan can recover private allocation in clean files that reset otherwise
+leaves untouched. Initial worktree creation suppresses this second scan because
+it already used checkout creation. Explicit false disables repair; soft/mixed
+reset and no-op checkout do not request it. Operational failures warn without
+failing or undoing the completed reset. The scan and APFS replacement limits
+apply to these otherwise clean files too.
+
+Validation
+----------
+
+Native tests exercise allocation, metadata, provenance presence/value cases,
+ordinary xattr and ACL faults, observed source/target writes/replacements,
+leading-directory symlinks, idempotence and cooperating index writers. Native
+oracles and interposers live under `t/lib-reflink/`; they use disposable files
+and do not scan existing user worktrees.
+
+Automatic source fallback uses the same bounded candidate list as creation,
+but compares each candidate's actual representation with the existing target.
+A representation mismatch may try the next candidate without rehashing an
+unchanged target. Fully shared targets still exit before any donor lookup.

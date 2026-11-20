@@ -13,6 +13,8 @@ git worktree add [-f] [--detach] [--checkout] [--lock [--reason <string>]]
 		 [--[no-]reflink] [--reflink-source=<worktree>]
 		 [--orphan] [(-b | -B) <new-branch>] <path> [<commit-ish>]
 git worktree list [-v | --porcelain [-z]]
+git worktree reflink [-n] [-v | --porcelain [-z]]
+		 [--reflink-source=<worktree>] [<worktree>]
 git worktree lock [--reason <string>] <worktree>
 git worktree move <worktree> <new-path>
 git worktree prune [-n] [-v] [--expire <expire>]
@@ -139,6 +141,49 @@ remove" next time you want to do so).  Also, if you _moved_ a
 working tree elsewhere causing the worktree information to become
 dangling, see "git worktree repair" to reconnect the worktree to
 the new working tree location.
+
+`reflink [<worktree>]`::
+
+Re-share the allocated file data of an existing worktree with its reflink
+source, defaulting to the current worktree. This explicit command operates
+even when `checkout.reflink` is false. Source selection follows `worktree add`;
+`--reflink-source` overrides it for this invocation without changing settings.
+Only tracked, present regular files with matching source index identities and
+eligible target stat/content state are considered. Known dirty files, sparse
+entries, symlinks, submodules and hardlinked targets are skipped. Fully shared
+files are skipped without reading their data. The index's normal stat and
+racy-file rules determine whether a target requires content verification.
++
+Existing target bytes are preserved, including clean historical LF/CRLF
+representations that differ from today's checkout output. Linux uses native
+in-place compare-and-share on supported filesystems. APFS compares a temporary
+clone against the actual target, copies and verifies target metadata, and
+replaces its pathname. APFS preserves mode, ownership, mtime, atime, creation
+time, extended attributes and ACLs when these can be copied and verified;
+inode and ctime change, and the index records the replacement's actual stat.
+The kernel-managed `com.apple.provenance` attribute is left to macOS on the
+replacement inode; its value or presence may differ. All other extended
+attributes, including quarantine, must match byte for byte before replacement.
+Files with special flags or set-ID bits are skipped on APFS.
++
+APFS replacement requires the ordinary Git file-replacement concurrency
+contract: do not edit working-tree files through writable memory mappings or
+retain writable descriptors across this operation. Read-only mappings of Git
+objects and pack files are unaffected. Observed writes and path replacements
+are skipped, but a write after the last check can race the rename, and a held
+descriptor continues to refer to the old inode. Linux's native deduplication
+preserves the inode and is atomic with concurrent writes. Neither backend
+adds stronger dirty-file detection than Git's existing stat trust.
++
+`--dry-run` compares candidates and reports potential private allocation
+reduction without sharing or replacing files. This is an upper bound, not a
+promise of filesystem free-space recovery. APFS dry-run does not attempt the
+metadata copy and verification required for replacement; apply can still skip
+an estimated candidate with `metadata-unavailable`. `--porcelain` reports paths,
+reasons, allocation and work counts; see <<REFLINK-PORCELAIN>>. Unsupported
+filesystems and unavailable donors produce skips. The exit status is zero
+when all paths were re-shared or skipped, and nonzero for operational failures.
+The command does not recurse into submodules or enable future reflink checkout.
 
 `remove`::
 
@@ -404,6 +449,53 @@ share to all worktrees:
 
 See the documentation of `extensions.worktreeConfig` in
 linkgit:git-config[1] for more details.
+
+[[REFLINK-PORCELAIN]]
+REFLINK PORCELAIN FORMAT
+------------------------
+
+`worktree reflink --porcelain` has a versioned header, one record per index
+entry, and a summary. Fields are `name value` lines; a blank line separates
+records. `-z` replaces every line terminator, including record separators,
+with NUL and emits path values verbatim. Otherwise paths follow
+`core.quotePath`. Consumers should ignore unknown fields and reasons.
+
+The header contains `reflink 1`, `worktree <absolute-path>`, `dry-run 0|1`
+and `backend native-dedupe|clone-replace|unsupported`. Each path record has
+`path`, `status`, `reason`, `error-code`, `allocated-before`, `private-before`,
+`allocated-after`, `private-after`, and `deduplicated-range-bytes`.
+Allocation fields contain byte counts or `unknown`. Status is `eligible`
+(dry-run), `already-shared`, `reshared`, `skipped` or `failed`.
+`error-code` is an OS errno value for a reported syscall error, otherwise zero.
+
+The `summary` record contains `scanned`, `eligible`, `already-shared`,
+`reshared`, `skipped`, `failed`, aggregate allocation fields,
+`allocation-unknown` (paths), `observed-private-reduction`,
+`potential-private-reduction` (dry-run only), `deduplicated-range-bytes`,
+`stat-clean`, `content-checked`, `content-check-bytes`, `userspace-compared`,
+`comparison-bytes`, `native-attempts`, `native-range-bytes` and
+`clone-attempts`. The same counts are emitted as Trace2 data under
+`reflink-reshare`, including for the quiet hard-reset pass.
+
+Private allocation is measured using APFS private data size or Linux FIEMAP
+extent flags. It describes file data, not metadata, compression-adjusted
+global free space or a promise that the same amount becomes available on the
+volume. Counts may change with concurrent filesystem activity. Aggregate
+allocation includes only paths with both observations available.
+`observed-private-reduction` is the nonnegative difference of those totals.
+Native range bytes and deduplicated bytes are logical ranges; they can include
+already shared portions and must not be interpreted as reclaimed allocation.
+Dry-run potential is the private allocation of byte-matching eligible paths,
+which can be an upper bound when only part of a range can be shared.
+
+Stat-clean candidates avoid object/hash/filter work. Ambiguous stat/racy
+eligibility uses normal Git content verification; ambiguous external-filter
+or encoding cases are conservatively skipped. Linux apply uses the kernel's
+mandatory comparison without userspace byte comparison. APFS apply and
+dry-run compare actual bytes in userspace; `comparison-bytes` counts requested
+bytes across both descriptors (an early mismatch may read less).
+The sharing pass is serial; `checkout.workers` continues to control ordinary
+checkout, not the repair scan.
 
 [[DETAILS]]
 DETAILS
