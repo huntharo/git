@@ -2,16 +2,7 @@
 set -euo pipefail
 arch="${1:?Pass x64 or arm64}"
 snapshot="${2:?Pass the pinned Ubuntu snapshot timestamp}"
-rm -f /etc/apt/sources.list.d/*
-cat > /etc/apt/sources.list <<EOF
-deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/$snapshot jammy main universe
-deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/$snapshot jammy-updates main universe
-deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/$snapshot jammy-security main universe
-deb-src [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/$snapshot jammy main universe
-deb-src [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/$snapshot jammy-updates main universe
-deb-src [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/$snapshot jammy-security main universe
-EOF
-apt-get update
+bash /src/contrib/pwrgit-runtime/setup-linux-apt.sh "$snapshot"
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   build-essential git python3 libcurl4-openssl-dev libexpat1-dev zlib1g-dev libssl-dev \
   ca-certificates patchelf binutils dpkg-dev xz-utils

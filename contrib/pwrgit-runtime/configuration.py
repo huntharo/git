@@ -15,17 +15,22 @@ def verify_configuration(git, config, environment):
                                 env=dict(env, **(extra or {})),
                                 capture_output=True, text=True, check=False)
         if missing:
-            assert result.returncode == 1 and not result.stdout, result.stderr
+            if result.returncode != 1 or result.stdout:
+                raise ValueError(f'Expected no value for {args[-1]}: {result}')
             return None
         result.check_returncode()
         return result.stdout.strip()
 
-    assert command('config', '--system', '--no-includes', '--get-all',
-                   'include.path') == '/etc/gitconfig'
+    def expect(expected, *args, **kwargs):
+        actual = command(*args, **kwargs)
+        if actual != expected:
+            raise ValueError(f'Expected {expected!r} from git {args!r}, got {actual!r}')
+
+    expect('/etc/gitconfig', 'config', '--system', '--no-includes', '--get-all', 'include.path')
     command('config', '--system', '--no-includes', '--get',
             'checkout.reflink', missing=True)
-    assert command('config', '--system', '--no-includes', '--bool', '--get',
-                   'credential.https://dev.azure.com.useHttpPath') == 'true'
+    expect('true', 'config', '--system', '--no-includes', '--bool', '--get',
+           'credential.https://dev.azure.com.useHttpPath')
 
     with tempfile.TemporaryDirectory(prefix='pwrgit-config-') as tmp:
         root = Path(tmp)
@@ -45,25 +50,22 @@ def verify_configuration(git, config, environment):
         command('config', 'pwrgitRuntimeTest.repository', 'visible', cwd=repo, extra=overrides)
         command('config', 'pwrgitRuntimeTest.priority', 'repository', cwd=repo, extra=overrides)
         for scope in ('system', 'global', 'repository'):
-            assert command('config', '--get', 'pwrgitRuntimeTest.' + scope,
-                           cwd=repo, extra=overrides) == 'visible'
-        assert command('config', '--get-all', 'pwrgitRuntimeTest.priority',
-                       cwd=repo, extra=overrides).splitlines() == ['system', 'global', 'repository']
-        assert command('-c', 'pwrgitRuntimeTest.priority=command', 'config', '--get',
-                       'pwrgitRuntimeTest.priority', cwd=repo, extra=overrides) == 'command'
-        assert command('config', '--bool', '--get', 'checkout.reflink',
-                       cwd=repo, extra=overrides) == 'true'
+            expect('visible', 'config', '--get', 'pwrgitRuntimeTest.' + scope, cwd=repo, extra=overrides)
+        expect('system\nglobal\nrepository', 'config', '--get-all', 'pwrgitRuntimeTest.priority',
+               cwd=repo, extra=overrides)
+        expect('command', '-c', 'pwrgitRuntimeTest.priority=command', 'config', '--get',
+               'pwrgitRuntimeTest.priority', cwd=repo, extra=overrides)
+        expect('true', 'config', '--bool', '--get', 'checkout.reflink', cwd=repo, extra=overrides)
         command('config', '--file', global_file, 'checkout.reflink', 'false')
-        assert command('config', '--bool', '--get', 'checkout.reflink',
-                       cwd=repo, extra=overrides) == 'false'
-        assert command('-c', 'checkout.reflink=true', 'config', '--bool', '--get',
-                       'checkout.reflink', cwd=repo, extra=overrides) == 'true'
+        expect('false', 'config', '--bool', '--get', 'checkout.reflink', cwd=repo, extra=overrides)
+        expect('true', '-c', 'checkout.reflink=true', 'config', '--bool', '--get',
+               'checkout.reflink', cwd=repo, extra=overrides)
         command('config', '--get', 'pwrgitRuntimeTest.system', cwd=repo,
                 extra=dict(overrides, GIT_CONFIG_NOSYSTEM='1'), missing=True)
         alternate = root / 'explicit system config'
         alternate.write_text('[pwrgitRuntimeTest]\n\tsystem = explicit\n')
-        assert command('config', '--get', 'pwrgitRuntimeTest.system', cwd=repo,
-                       extra=dict(overrides, GIT_CONFIG_SYSTEM=str(alternate))) == 'explicit'
+        expect('explicit', 'config', '--get', 'pwrgitRuntimeTest.system', cwd=repo,
+               extra=dict(overrides, GIT_CONFIG_SYSTEM=str(alternate)))
     return dict(system_include='/etc/gitconfig', azure_use_http_path=True,
                 runtime_reflink_default=False, system_global_repository_visible=True,
                 includes_and_precedence=True, explicit_system_override=True,

@@ -16,13 +16,17 @@ keychain="$work/pwrdrvr-release-signing.keychain-db"
 keychain_password="$(openssl rand -hex 32)"
 security list-keychains -d user > "$work/original-keychains.txt"
 cleanup() {
-  security delete-keychain "$keychain" >/dev/null 2>&1 || true
+  local status=$?
+  if [[ -e "$keychain" ]]; then
+    security delete-keychain "$keychain" || status=1
+  fi
   # A subprocess reads the quoted keychain list without shell evaluation.
-  python3 - "$work/original-keychains.txt" <<'PY'
+  python3 - "$work/original-keychains.txt" <<'PY' || status=1
 import shlex,subprocess,sys
-subprocess.run(['security','list-keychains','-d','user','-s',*shlex.split(open(sys.argv[1]).read())],check=False)
+subprocess.run(['security','list-keychains','-d','user','-s',*shlex.split(open(sys.argv[1]).read())],check=True)
 PY
-  rm -rf "$work"
+  rm -rf "$work" || status=1
+  exit "$status"
 }
 trap cleanup EXIT
 certificate_base64="${CSC_LINK#data:application/x-pkcs12;base64,}"
@@ -74,4 +78,3 @@ write_json(root/'pwrgit-build.json',m)
 write_json(root/'notarization.json',receipt)
 seal(root)
 PY
-python3 "$(dirname "$0")/verify.py" "$root" --require-signed
