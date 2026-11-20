@@ -96,9 +96,17 @@ enum index_search_mode {
 	EXPAND_SPARSE = 1
 };
 
+static inline void verify_ce_namelen(size_t len)
+{
+	if (len > INT_MAX)
+		die(_("index entry path is too long (%"PRIuMAX" bytes)"),
+		    (uintmax_t)len);
+}
+
 static inline struct cache_entry *mem_pool__ce_alloc(struct mem_pool *mem_pool, size_t len)
 {
 	struct cache_entry *ce;
+	verify_ce_namelen(len);
 	ce = mem_pool_alloc(mem_pool, cache_entry_size(len));
 	ce->mem_pool_allocated = 1;
 	return ce;
@@ -107,6 +115,7 @@ static inline struct cache_entry *mem_pool__ce_alloc(struct mem_pool *mem_pool, 
 static inline struct cache_entry *mem_pool__ce_calloc(struct mem_pool *mem_pool, size_t len)
 {
 	struct cache_entry * ce;
+	verify_ce_namelen(len);
 	ce = mem_pool_calloc(mem_pool, 1, cache_entry_size(len));
 	ce->mem_pool_allocated = 1;
 	return ce;
@@ -127,6 +136,135 @@ static struct mem_pool *find_mem_pool(struct index_state *istate)
 	}
 
 	return *pool_ptr;
+}
+
+/*
+ * "refresh" does not calculate a new sha1 file or bring the
+ * cache up-to-date for mode/content changes. But what it
+ * _does_ do is to "re-match" the stat information of a file
+ * with the cache, so that you can refresh the cache for a
+ * file that hasn't been changed but where the stat entry is
+ * out of date.
+ *
+ * For example, you'd want to do this after doing a "git-read-tree",
+ * to link up the stat cache details with the proper files.
+ */
+static struct cache_entry *refresh_cache_ent(struct index_state *istate,
+					     struct cache_entry *ce,
+					     unsigned int options, int *err,
+					     int *changed_ret,
+					     int *t2_did_lstat,
+					     int *t2_did_scan)
+{
+	struct stat st;
+	struct cache_entry *updated;
+	int changed;
+	int refresh = options & CE_MATCH_REFRESH;
+	int ignore_valid = options & CE_MATCH_IGNORE_VALID;
+	int ignore_skip_worktree = options & CE_MATCH_IGNORE_SKIP_WORKTREE;
+	int ignore_missing = options & CE_MATCH_IGNORE_MISSING;
+	int ignore_fsmonitor = options & CE_MATCH_IGNORE_FSMONITOR;
+
+	if (!refresh || ce_uptodate(ce))
+		return ce;
+
+	if (!ignore_fsmonitor)
+		refresh_fsmonitor(istate);
+	/*
+	 * CE_VALID or CE_SKIP_WORKTREE means the user promised us
+	 * that the change to the work tree does not matter and told
+	 * us not to worry.
+	 */
+	if (!ignore_skip_worktree && ce_skip_worktree(ce)) {
+		ce_mark_uptodate(ce);
+		return ce;
+	}
+	if (!ignore_valid && (ce->ce_flags & CE_VALID)) {
+		ce_mark_uptodate(ce);
+		return ce;
+	}
+	if (!ignore_fsmonitor && ce_fsmonitor_valid(ce)) {
+		ce_mark_uptodate(ce);
+		return ce;
+	}
+
+	if (has_symlink_leading_path(ce->name, ce_namelen(ce))) {
+		if (ignore_missing)
+			return ce;
+		if (err)
+			*err = ENOENT;
+		return NULL;
+	}
+
+	if (t2_did_lstat)
+		*t2_did_lstat = 1;
+	if (lstat(ce->name, &st) < 0) {
+		if (ignore_missing && errno == ENOENT)
+			return ce;
+		if (err)
+			*err = errno;
+		return NULL;
+	}
+
+	changed = ie_match_stat(istate, ce, &st, options);
+	if (changed_ret)
+		*changed_ret = changed;
+	if (!changed) {
+		/*
+		 * The path is unchanged.  If we were told to ignore
+		 * valid bit, then we did the actual stat check and
+		 * found that the entry is unmodified.  If the entry
+		 * is not marked VALID, this is the place to mark it
+		 * valid again, under "assume unchanged" mode.
+		 */
+		if (ignore_valid && assume_unchanged &&
+		    !(ce->ce_flags & CE_VALID))
+			; /* mark this one VALID again */
+		else {
+			/*
+			 * We do not mark the index itself "modified"
+			 * because CE_UPTODATE flag is in-core only;
+			 * we are not going to write this change out.
+			 */
+			if (!S_ISGITLINK(ce->ce_mode)) {
+				ce_mark_uptodate(ce);
+				mark_fsmonitor_valid(istate, ce);
+			}
+			return ce;
+		}
+	}
+
+	if (t2_did_scan)
+		*t2_did_scan = 1;
+	if (ie_modified(istate, ce, &st, options)) {
+		if (err)
+			*err = EINVAL;
+		return NULL;
+	}
+
+	updated = make_empty_cache_entry(istate, ce_namelen(ce));
+	copy_cache_entry(updated, ce);
+	memcpy(updated->name, ce->name, ce->ce_namelen + 1);
+	fill_stat_cache_info(istate, updated, &st);
+	/*
+	 * If ignore_valid is not set, we should leave CE_VALID bit
+	 * alone.  Otherwise, paths marked with --no-assume-unchanged
+	 * (i.e. things to be edited) will reacquire CE_VALID bit
+	 * automatically, which is not really what we want.
+	 */
+	if (!ignore_valid && assume_unchanged &&
+	    !(ce->ce_flags & CE_VALID))
+		updated->ce_flags &= ~CE_VALID;
+
+	/* istate->cache_changed is updated in the caller */
+	return updated;
+}
+
+static struct cache_entry *refresh_cache_entry(struct index_state *istate,
+					       struct cache_entry *ce,
+					       unsigned int options)
+{
+	return refresh_cache_ent(istate, ce, options, NULL, NULL, NULL, NULL);
 }
 
 static const char *alternate_index_output;
@@ -853,6 +991,7 @@ struct cache_entry *make_empty_transient_cache_entry(size_t len,
 {
 	if (ce_mem_pool)
 		return mem_pool__ce_calloc(ce_mem_pool, len);
+	verify_ce_namelen(len);
 	return xcalloc(1, cache_entry_size(len));
 }
 
@@ -877,7 +1016,7 @@ struct cache_entry *make_cache_entry(struct index_state *istate,
 				     unsigned int refresh_options)
 {
 	struct cache_entry *ce, *ret;
-	int len;
+	size_t len;
 
 	if (verify_path_internal(path, mode) == PATH_INVALID) {
 		error(_("invalid path '%s'"), path);
@@ -906,7 +1045,7 @@ struct cache_entry *make_transient_cache_entry(unsigned int mode,
 					       struct mem_pool *ce_mem_pool)
 {
 	struct cache_entry *ce;
-	int len;
+	size_t len;
 
 	if (!verify_path(path, mode)) {
 		error(_("invalid path '%s'"), path);
@@ -1022,6 +1161,9 @@ static enum verify_path_result verify_path_internal(const char *path,
 		return PATH_INVALID;
 
 	if (!is_valid_path(path))
+		return PATH_INVALID;
+
+	if (strlen(path) > repo_config_values(the_repository)->max_ce_namelen)
 		return PATH_INVALID;
 
 	goto inside;
@@ -1354,128 +1496,6 @@ int add_index_entry(struct index_state *istate, struct cache_entry *ce, int opti
 	return 0;
 }
 
-/*
- * "refresh" does not calculate a new sha1 file or bring the
- * cache up-to-date for mode/content changes. But what it
- * _does_ do is to "re-match" the stat information of a file
- * with the cache, so that you can refresh the cache for a
- * file that hasn't been changed but where the stat entry is
- * out of date.
- *
- * For example, you'd want to do this after doing a "git-read-tree",
- * to link up the stat cache details with the proper files.
- */
-static struct cache_entry *refresh_cache_ent(struct index_state *istate,
-					     struct cache_entry *ce,
-					     unsigned int options, int *err,
-					     int *changed_ret,
-					     int *t2_did_lstat,
-					     int *t2_did_scan)
-{
-	struct stat st;
-	struct cache_entry *updated;
-	int changed;
-	int refresh = options & CE_MATCH_REFRESH;
-	int ignore_valid = options & CE_MATCH_IGNORE_VALID;
-	int ignore_skip_worktree = options & CE_MATCH_IGNORE_SKIP_WORKTREE;
-	int ignore_missing = options & CE_MATCH_IGNORE_MISSING;
-	int ignore_fsmonitor = options & CE_MATCH_IGNORE_FSMONITOR;
-
-	if (!refresh || ce_uptodate(ce))
-		return ce;
-
-	if (!ignore_fsmonitor)
-		refresh_fsmonitor(istate);
-	/*
-	 * CE_VALID or CE_SKIP_WORKTREE means the user promised us
-	 * that the change to the work tree does not matter and told
-	 * us not to worry.
-	 */
-	if (!ignore_skip_worktree && ce_skip_worktree(ce)) {
-		ce_mark_uptodate(ce);
-		return ce;
-	}
-	if (!ignore_valid && (ce->ce_flags & CE_VALID)) {
-		ce_mark_uptodate(ce);
-		return ce;
-	}
-	if (!ignore_fsmonitor && ce_fsmonitor_valid(ce)) {
-		ce_mark_uptodate(ce);
-		return ce;
-	}
-
-	if (has_symlink_leading_path(ce->name, ce_namelen(ce))) {
-		if (ignore_missing)
-			return ce;
-		if (err)
-			*err = ENOENT;
-		return NULL;
-	}
-
-	if (t2_did_lstat)
-		*t2_did_lstat = 1;
-	if (lstat(ce->name, &st) < 0) {
-		if (ignore_missing && errno == ENOENT)
-			return ce;
-		if (err)
-			*err = errno;
-		return NULL;
-	}
-
-	changed = ie_match_stat(istate, ce, &st, options);
-	if (changed_ret)
-		*changed_ret = changed;
-	if (!changed) {
-		/*
-		 * The path is unchanged.  If we were told to ignore
-		 * valid bit, then we did the actual stat check and
-		 * found that the entry is unmodified.  If the entry
-		 * is not marked VALID, this is the place to mark it
-		 * valid again, under "assume unchanged" mode.
-		 */
-		if (ignore_valid && assume_unchanged &&
-		    !(ce->ce_flags & CE_VALID))
-			; /* mark this one VALID again */
-		else {
-			/*
-			 * We do not mark the index itself "modified"
-			 * because CE_UPTODATE flag is in-core only;
-			 * we are not going to write this change out.
-			 */
-			if (!S_ISGITLINK(ce->ce_mode)) {
-				ce_mark_uptodate(ce);
-				mark_fsmonitor_valid(istate, ce);
-			}
-			return ce;
-		}
-	}
-
-	if (t2_did_scan)
-		*t2_did_scan = 1;
-	if (ie_modified(istate, ce, &st, options)) {
-		if (err)
-			*err = EINVAL;
-		return NULL;
-	}
-
-	updated = make_empty_cache_entry(istate, ce_namelen(ce));
-	copy_cache_entry(updated, ce);
-	memcpy(updated->name, ce->name, ce->ce_namelen + 1);
-	fill_stat_cache_info(istate, updated, &st);
-	/*
-	 * If ignore_valid is not set, we should leave CE_VALID bit
-	 * alone.  Otherwise, paths marked with --no-assume-unchanged
-	 * (i.e. things to be edited) will reacquire CE_VALID bit
-	 * automatically, which is not really what we want.
-	 */
-	if (!ignore_valid && assume_unchanged &&
-	    !(ce->ce_flags & CE_VALID))
-		updated->ce_flags &= ~CE_VALID;
-
-	/* istate->cache_changed is updated in the caller */
-	return updated;
-}
-
 static void show_file(const char * fmt, const char * name, int in_porcelain,
 		      int * first, const char *header_msg)
 {
@@ -1640,13 +1660,6 @@ int refresh_index(struct index_state *istate, unsigned int flags,
 	stop_progress(&progress);
 	trace_performance_leave("refresh index");
 	return has_errors;
-}
-
-struct cache_entry *refresh_cache_entry(struct index_state *istate,
-					struct cache_entry *ce,
-					unsigned int options)
-{
-	return refresh_cache_ent(istate, ce, options, NULL, NULL, NULL, NULL);
 }
 
 
@@ -3102,6 +3115,22 @@ static int do_write_index(struct index_state *istate, struct tempfile *tempfile,
 	    istate->untracked) {
 		strbuf_reset(&sb);
 
+		/*
+		 * The monitor could not say what changed (see the trivial
+		 * response in refresh_fsmonitor()), so nothing kept the
+		 * valid bits up to date. Check them before they are saved
+		 * next to the new token, which later commands trust even
+		 * when this command did not look for untracked files.
+		 */
+		if (write_extensions & WRITE_FSMONITOR_EXTENSION &&
+		    istate->fsmonitor_last_update &&
+		    !istate->untracked->use_fsmonitor) {
+			int nr = untracked_cache_invalidate_stale_dirs(istate);
+
+			trace2_data_intmax("index", istate->repo,
+					   "extension/untr/invalidated", nr);
+		}
+
 		write_untracked_extension(&sb, istate->untracked);
 		err = write_index_ext_header(f, eoie_c, CACHE_EXT_UNTRACKED,
 					     sb.len) < 0;
@@ -3827,14 +3856,14 @@ static int read_one_entry_opt(struct index_state *istate,
 			      const char *pathname,
 			      unsigned mode, int opt)
 {
-	int len;
+	size_t len;
 	struct cache_entry *ce;
 
 	if (S_ISDIR(mode))
 		return READ_TREE_RECURSIVE;
 
 	len = strlen(pathname);
-	ce = make_empty_cache_entry(istate, base->len + len);
+	ce = make_empty_cache_entry(istate, st_add(base->len, len));
 
 	ce->ce_mode = create_ce_mode(mode);
 	ce->ce_flags = create_ce_flags(1);
