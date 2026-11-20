@@ -39,9 +39,6 @@ test:linux:
       - jobname: linux-sha256
         image: ubuntu:rolling
         CC: clang
-      - jobname: linux-reftable-sha256
-        image: ubuntu:rolling
-        CC: clang
       - jobname: linux-feature-testbed
         image: ubuntu:latest
       - jobname: linux-breaking-changes
@@ -253,6 +250,8 @@ check-whitespace:
   image: ubuntu:latest
   stage: analyze
   needs: [ ]
+  variables:
+    GIT_DEPTH: 0
   before_script:
     - ./ci/install-dependencies.sh
   # Since $CI_MERGE_REQUEST_TARGET_BRANCH_SHA is only defined for merged
@@ -273,6 +272,7 @@ check-style:
   variables:
     CC: clang
     jobname: ClangFormat
+    GIT_DEPTH: 0
   before_script:
     - ./ci/install-dependencies.sh
   # Since $CI_MERGE_REQUEST_TARGET_BRANCH_SHA is only defined for merged

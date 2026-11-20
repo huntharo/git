@@ -76,6 +76,7 @@ void initialize_repository(struct repository *repo)
 	repo->bare_cfg = -1;
 	repo->fetch_if_missing = 1;
 	repo_config_values_init(&repo->config_values_private_);
+	repo->rerere_cache_enabled = -1;
 
 	/*
 	 * When a command runs inside a repository, it learns what
@@ -215,6 +216,15 @@ void repo_set_ref_storage_format(struct repository *repo,
 	repo->ref_storage_format = format;
 	free(repo->ref_storage_payload);
 	repo->ref_storage_payload = xstrdup_or_null(payload);
+}
+
+void repo_set_object_storage_format(struct repository *repo,
+				    enum object_storage_format format,
+				    const char *payload)
+{
+	repo->object_storage_format = format;
+	free(repo->object_storage_payload);
+	repo->object_storage_payload = xstrdup_or_null(payload);
 }
 
 /*
@@ -383,6 +393,7 @@ void repo_clear(struct repository *repo)
 	free(repo->worktree);
 	free(repo->submodule_prefix);
 	free(repo->ref_storage_payload);
+	free(repo->object_storage_payload);
 
 	odb_free(repo->objects);
 

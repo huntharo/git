@@ -2,6 +2,7 @@
 #include "abspath.h"
 #include "commit-graph.h"
 #include "config.h"
+#include "dir.h"
 #include "environment.h"
 #include "gettext.h"
 #include "hashmap.h"
@@ -26,6 +27,49 @@
 #include "tmp-objdir.h"
 #include "trace2.h"
 #include "write-or-die.h"
+
+static const char * const object_storage_name_by_format[] = {
+	[OBJECT_STORAGE_FORMAT_UNKNOWN] = "unknown",
+	[OBJECT_STORAGE_FORMAT_FILES] = "files",
+};
+
+enum object_storage_format object_storage_format_by_name(const char *name)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(object_storage_name_by_format); i++)
+		if (!strcmp(object_storage_name_by_format[i], name))
+			return i;
+	return OBJECT_STORAGE_FORMAT_UNKNOWN;
+}
+
+const char *object_storage_format_to_name(enum object_storage_format format)
+{
+	if (format < 0 || format >= ARRAY_SIZE(object_storage_name_by_format))
+		format = OBJECT_STORAGE_FORMAT_UNKNOWN;
+	return object_storage_name_by_format[format];
+}
+
+enum object_storage_format object_storage_format_by_uri(const char *uri, char **payload)
+{
+	enum object_storage_format format;
+	const char *schema_end;
+	char *name;
+
+	schema_end = strstr(uri, "://");
+	if (!schema_end) {
+		name = xstrdup(uri);
+		if (payload)
+			*payload = NULL;
+	} else {
+		name = xstrndup(uri, schema_end - uri);
+		if (payload)
+			*payload = *(schema_end + 3) ? xstrdup(schema_end + 3) : NULL;
+	}
+
+	format = object_storage_format_by_name(name);
+
+	free(name);
+	return format;
+}
 
 int odb_mkstemp(struct object_database *odb,
 		struct strbuf *temp_filename, const char *pattern)
@@ -183,6 +227,7 @@ static int refs_from_alternate_cb(struct odb_files_dir *alternate,
 				  void *payload)
 {
 	struct strbuf path = STRBUF_INIT;
+	struct strbuf repo = STRBUF_INIT;
 	size_t base_len;
 	struct alternate_refs_data *cb = payload;
 
@@ -198,10 +243,27 @@ static int refs_from_alternate_cb(struct odb_files_dir *alternate,
 		goto out;
 	strbuf_setlen(&path, base_len);
 
+	/* A shallow or grafted repository may lack the history behind its refs. */
+	strbuf_addstr(&path, "/shallow");
+	if (!access(path.buf, F_OK))
+		goto out;
+	strbuf_setlen(&path, base_len);
+
+	strbuf_addstr(&path, "/info/grafts");
+	if (!access(path.buf, F_OK))
+		goto out;
+	strbuf_setlen(&path, base_len);
+
+	/* Our own repository is not a source of alternate refs. */
+	if (strbuf_realpath(&repo, cb->repo->commondir, 0) &&
+	    !fspathcmp(path.buf, repo.buf))
+		goto out;
+
 	read_alternate_refs(cb->repo, path.buf, cb->fn, cb->payload);
 
 out:
 	strbuf_release(&path);
+	strbuf_release(&repo);
 	return 0;
 }
 
@@ -730,7 +792,8 @@ struct object_database *odb_new(struct repository *repo,
 	o->repo = repo;
 	pthread_mutex_init(&o->replace_mutex, NULL);
 
-	o->source = odb_source_new(o, flags);
+	o->source = odb_source_new(o, repo->object_storage_format,
+				   repo->object_storage_payload, flags);
 	o->inmemory_objects = &odb_source_inmemory_new(o)->base;
 
 	return o;
@@ -739,7 +802,7 @@ struct object_database *odb_new(struct repository *repo,
 void odb_close(struct object_database *o)
 {
 	odb_source_close(o->source);
-	close_commit_graph(o);
+	commit_graph_close(o);
 }
 
 static void odb_free_sources(struct object_database *o)
