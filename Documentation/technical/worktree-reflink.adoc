@@ -1,0 +1,304 @@
+Existing-worktree re-sharing
+===========================
+
+Source and interface
+--------------------
+
+This follow-up is stacked on conversion-aware checkout (PR #3), whose head is
+0b3b36aee2941de69ca9cdd70cbcef6c761b5189. The implementation tested here is
+03864ebb20f91afc1e7ebda23230da09d7ea3019. It does not replace the installed
+PwrAgent trial runtime or change application/global settings.
+
+An ordinary writer can break sharing when it rewrites a file. A later no-op
+checkout does not write that file, so the checkout clone hook cannot recover
+its private allocation. `git worktree reflink [<worktree>]` performs that
+physical optimization explicitly. `--dry-run`, `--porcelain`, `-z`, `--verbose`
+and `--reflink-source` support inspection and integration. See git-worktree(1)
+for the versioned output protocol and exact accounting units.
+
+Successful explicit `reset --hard` also invokes this engine with effective
+reflink enablement. Explicit false overrides the source marker. The pass
+preserves ordinary reset's resulting bytes and exit status; operational
+failures warn, and unsupported cases skip. Soft/mixed reset and no-op
+checkout/switch retain their previous behavior. Initial worktree creation
+already uses checkout's clone hook: its internal reset is marked through a
+private child environment variable and does not perform an additional repair
+scan. This avoids charging fresh checkout for the existing-file operation.
+
+Eligibility and integrity
+-------------------------
+
+Index/stat identity is normalized identity, not proof of checkout bytes.
+Attributes-only EOL changes, `git add` and ordinary refresh can leave a clean
+file holding a historical LF, CRLF or mixed representation. Re-sharing uses
+the target's actual physical representation; it does not reconvert it.
+
+The scan skips absent/nonregular/sparse/unmerged/intent-to-add entries and
+hardlinked targets. Allocation metadata identifies fully shared files before
+any hash, conversion, clone or byte comparison. For private candidates,
+`ie_match_stat()` with the existing ignore-valid/skip/fsmonitor and
+racy-is-dirty flags establishes the normal stat/non-racy fast path. It does
+not read objects, hash target contents, look up conversion attributes or
+invoke filters. Known size, type and mode changes resolve dirty eligibility
+directly. Stat/racy ambiguity uses normal `index_fd()` content verification;
+ambiguous external-filter or working-tree-encoding cases skip conservatively.
+No fabricated stat entries or separate verification cache are introduced.
+
+Source selection reuses the marker/config/main-worktree order and existing
+source index OID/stat/racy checks. The in-place/replacement operation needs
+actual existing bytes, so it avoids checkout-only output-conversion and raw
+blob-size gates. Stat-clean filtered/LFS files can share without invoking a
+filter, because no new checkout output is inferred from the filter's name.
+The source descriptor and source/target path identities are rechecked for
+observed changes. Dirty-file exclusion retains ordinary Git's stat-trust
+limits; an edit invisible to those checks is not newly guaranteed detectable.
+The existing PR2 donor/stat trust remains separate from the stronger donor
+verification in PR1; this follow-up does not confer PR1's guarantee.
+
+On Linux, FIDEDUPERANGE compares and shares matching ranges in place under
+kernel synchronization with writes. It preserves the inode and actual bytes;
+normal target hashing is needed only for ambiguous dirty eligibility, not as
+its byte-preservation mechanism. Requests are bounded to 16 MiB and account
+for returned progress and a short EOF. Unsupported filesystems, unavailable
+donors, differing actual bytes and permissions retain existing contents.
+The operation may share a prefix before a later range differs or fails.
+The kernel contract is documented in
+https://man7.org/linux/man-pages/man2/ioctl_fideduperange.2.html[ioctl_fideduperange(2)].
+
+On APFS, public clone APIs require an absent destination. The engine creates
+a donor clone in a private temporary directory beside the target, compares
+that clone with the opened target, copies target metadata using public
+fcopyfile APIs, verifies ownership/mode/times/xattrs/ACLs, and checks captured
+descriptor/path stats before rename. Special flags and set-ID targets skip.
+Mode, owner, group, mtime, atime, birth time, xattrs and ACLs are preserved when
+verification succeeds. Inode and ctime change. Under the index lock,
+`update_ce_after_write()` records the replacement's actual stat, with normal
+index writing/racy handling. Failures do not invent old metadata.
+The public interfaces are described by Apple's
+https://github.com/apple-oss-distributions/xnu/blob/main/bsd/man/man2/clonefile.2[clonefile(2)]
+and https://github.com/apple-oss-distributions/copyfile/blob/main/copyfile.3[copyfile(3)].
+
+Accepted APFS concurrency contract
+----------------------------------
+
+The user selected ordinary Git-style file replacement rather than requiring
+an atomic in-place APFS primitive. Do not edit working-tree files through
+writable mmap, or retain writable descriptors across replacement. Ordinary
+read-only mappings of Git objects/pack files are unaffected. Pre/post stat
+checks do not close the interval between the last check and rename; ordinary
+writes in that interval can race too. A retained descriptor refers to the old
+inode and cannot be redirected by rename. This is not arbitrary active-writer
+safety, and Linux's stronger in-place guarantee is not claimed for APFS.
+
+The standalone `contrib/reflink/apfs-reshare-limit.c` reproduces the accepted
+limit in independent scratch files. Observed macOS results were:
+
+----
+fclonefileat_existing rc=-1 errno=17
+fcopyfile_clone_force rc=-1 errno=45 cloned=0
+write_before_rename_target_changed=0
+open_inode_bytes=BC published_bytes=AA inode_changed=1
+----
+
+An already dirtied mapped page changed without the captured mtime/ctime
+changing. Clone/rename published the prior bytes while the retained old inode
+held the later writes. This evidence is separate from regressions that detect
+ordinary target writes, source writes, source/target path replacement and a
+concurrent edit during the hard-reset repair pass. No private entitlement or
+runtime/application replacement is used.
+
+Validation and measurements
+---------------------------
+
+Builds retain primary SHA1_DC. Native macOS ARM64 uses Apple clang 21.0.0,
+`DEVELOPER=1 NO_RUST=YesPlease NO_GETTEXT=YesPlease NO_TCLTK=YesPlease`, `-j4`,
+default `-g -O2`, no local config.mak/autogen. Existing Ubuntu 24.04 ARM64 in
+git-reflink-native uses GCC 13.3.0, Linux 7.0.14-linuxkit, the same developer
+options with `NO_RUST=1 NO_GETTEXT=1 NO_TCLTK=1`, and ordinary UID/GID 1000:1000.
+Fixtures use actual APFS, existing reflink-enabled XFS /dev/loop0 and btrfs
+/dev/loop1. No paid machine, remount or installed-runtime changes were used.
+
+All 4,874 tracked source blobs were checked with normal Git hashing (symlink
+contents separately), and the Linux source copy was checked against the exact
+Git archive, with no AppleDouble sidecars. The source archive and native
+executable digests are recorded below.
+
+The new t2416 suite has 38 cases, including workers 1/8, exact bytes and real
+sharing, zero hash/filter work for stat-clean private candidates, ordinary
+dirty/racy verification, historical LF/CRLF in both directions, same-size
+mixed-ending mismatch, partial sharing, multiple native ranges/short EOF,
+dry-run/porcelain/NUL names, marker/config precedence, sparse entries,
+hardlinks/symlinks/gitlinks, idempotence and observed source/target races.
+
+Independent 12-file actual-binary interop fixtures run unpatched A -> B -> A, then
+the explicit command or enabled same-HEAD hard reset. Each second run checks
+metadata and zero clone/compare/content-verification work; disabled controls
+remain private. Target-only xattrs/ACLs are checked. These are file-data
+allocation observations, not a promise of equivalent volume free space.
+
+|===
+|Filesystem / ordinary control |Workers |Operations |Private bytes before -> after
+|APFS / Apple Git 2.54.0 |1, 8 |command, hard reset |4,157,440 -> 0 each
+|APFS / Homebrew Git 2.56.0 |1, 8 |command, hard reset |4,157,440 -> 0 each
+|XFS / unmodified 50fe5cc build |1, 8 |command, hard reset |4,157,440 -> 0 each
+|btrfs / unmodified 50fe5cc build |1, 8 |command, hard reset |4,153,344 -> 0 each
+|===
+
+The eight-worker ordinary controls set checkout.thresholdForParallelism=0 and
+Trace2 proves eight checkout-worker children on both A -> B and B -> A. The
+one-worker control uses the main process. The repair pass itself is serial.
+Four additional historical-ident/encoding cases per filesystem preserve exact
+old target bytes after an attributes-only commit: matching historical donors
+share, while fresh expanded/re-encoded donors leave those targets private.
+Both explicit sharing and the subsequent hard reset preserve the result.
+
+Offline Git LFS 3.7.1 on APFS also passes command/hard-reset cases at workers
+1/8: a 540,000-byte payload plus attributes file goes from 544,768 private
+allocated bytes to zero. The stat-clean repair invokes no LFS filter process
+and performs zero content verification. A subsequent dirty payload remains
+dirty with exact bytes preserved. Linux LFS is unavailable in the container.
+
+|===
+|Full suite |Success |Failed |Expected broken |Total
+|Linux XFS, final implementation |32,782 |0 |371 |33,663
+|Linux btrfs, final shorter path |32,783 |0 |371 |33,663
+|macOS APFS, 1,067/1,068 scripts completed |33,215 |0 |377 |34,044
+|===
+
+An initial btrfs run had 33 additional GPG/GPGSM skips: an unchanged signature
+test could not start gpg-agent under the longer fixture path and passed under
+a shorter one. The complete btrfs rerun above uses that shorter path. No test
+assertions or production behavior were changed. Native unit targets pass on
+macOS and Linux, including the 261-case combined runner. Linux xattr snapshots
+pass; attempts to set POSIX ACLs return ENOTSUP (95) on both existing mounts,
+so Linux ACL preservation is not claimed as tested. Actual APFS ACL
+preservation is checked. The btrfs mount has noacl; the cause of the XFS ACL
+restriction is not established here.
+
+The native APFS attempt leaves t5500-fetch-pack incomplete: fetch-pack and
+upload-pack block in write with two 16,384-byte protocol pipes. Stacks and fd
+state are retained. The same current-run/context deadlock was independently
+reproduced with unchanged PR2 during PR3 validation. Earlier parent APFS runs
+did complete t5500 (367 successes of 378, 11 prerequisite skips); this is not
+a universal APFS failure. No fetch assertions or buffering were changed.
+The table excludes the interrupted script rather than reporting a full
+native pass. Nineteen native GPG-related scripts were rerun under the shorter
+path with assertions intact, restoring 284 initially skipped assertions;
+their completed records replace the corresponding first-run records above.
+
+Independent XFS-to-btrfs donor and unsupported tmpfs target fixtures retain
+exact bytes, inode/mode/size/mtime/ctime and index bytes, report zero repairs,
+and expose no-donor/unsupported-safe-dedupe reasons. No filesystem is remounted
+to manufacture coverage. Windows, bcachefs and overlayfs positive dedupe are
+not covered by these environments.
+
+The repair scan is serial regardless of checkout.workers. Work counts expose
+stat-clean/content-checked paths, verification bytes, requested userspace
+comparison bytes, native attempts/ranges and clone attempts. The Linux kernel
+comparison remains mandatory. APFS actual-byte comparison is necessary for
+existing-representation preservation and is separate from avoided target
+hashing. Fully shared second runs still pay metadata scanning cost.
+
+Repeated matched APFS costs
+--------------------------
+
+The scoped benchmark uses independent ordinary 50fe5cc, PR3 0b3b36aee2 and
+implementation 03864ebb20 builds with the native settings above. Two fixtures
+contain 2,048 files generated from 64 KiB each: unconverted data and text with
+explicit CRLF output (plus its attributes file). Before each timed sample,
+the ordinary writer recreates private files; actual file timestamps are aged
+and the ordinary index refresh records their real metadata. This preparation
+and all contents/allocation checks are outside timing. Shared-scan samples
+also perform the initial recovery outside timing.
+
+Five repetitions per cell are shuffled with seed 20261103, using warm caches:
+120 timed commands and 24 separate untimed Trace2/allocation controls. All
+pass exact digest and actual private-allocation assertions. The timed region
+invokes the command with Trace2 disabled. Dry-run includes porcelain output
+formatting/capture, so it is not a comparison-only microbenchmark.
+
+Median [minimum--maximum] wall time in milliseconds:
+
+|===
+|Fixture |Configured workers |Ordinary reset |PR3 reset |New disabled reset |Dry-run |Private recovery reset |Fully shared reset
+|Unconverted |1 |12.672 [11.904--24.154] |12.817 [12.587--28.147] |12.962 [12.079--14.986] |112.313 [97.533--203.545] |2,084.509 [1,734.303--3,945.441] |56.327 [50.328--68.670]
+|Unconverted |8 |12.335 [12.004--15.169] |15.768 [12.233--21.929] |12.829 [12.283--13.434] |112.284 [97.426--632.208] |1,916.819 [1,839.343--2,257.957] |61.528 [50.662--77.613]
+|CRLF |1 |15.319 [12.239--20.807] |13.089 [12.151--13.467] |13.003 [12.354--16.497] |111.651 [102.726--848.793] |1,984.102 [1,861.331--2,150.849] |49.256 [48.535--56.941]
+|CRLF |8 |13.086 [11.685--13.304] |14.347 [12.654--30.497] |13.385 [12.416--15.252] |143.623 [104.914--672.794] |1,906.433 [1,856.492--1,963.441] |54.884 [49.235--140.045]
+|===
+
+Ordinary reset and new disabled reset use checkout.reflink=false; PR3 and
+new recovery/shared resets use true. All are same-HEAD hard resets. These
+no-op resets do not spawn checkout workers: the worker setting is held
+constant as a compatibility control, not evidence of parallel repair.
+The separate interop fixtures above prove the actual eight-worker rewrite.
+
+Recovery reduces unconverted private file-data allocation from 134,217,728
+bytes to zero and CRLF allocation from 142,610,432 bytes to zero at both
+worker settings. Allocated file-data bytes remain the same; their extents
+become shared. Ordinary, PR3, disabled and dry-run controls retain the private
+allocation. Dry-run reports potential reduction with zero observed reduction.
+
+The recovery performs 2,048/2,049 stat-clean checks and clone/comparisons for
+the unconverted/CRLF fixture, with zero content-verification hashing or
+filter work. Requested comparison bytes across both descriptors are
+268,435,456 and 272,564,298 respectively; this metric is not a count of
+physical device reads. Fully shared second runs perform zero clones,
+comparisons or content verification, while paying the metadata scan shown
+above. APFS cloning plus actual-byte comparison and metadata preservation
+cost approximately 1.91--2.08 seconds at the medians here. It recovers storage
+at higher latency than a no-op; there is no speed-win claim or avoided-write
+claim against those controls. The table includes per-cell ranges; the
+reproduction script emits every sample and the untimed allocation/work-count
+observations as generated output.
+
+Measurements ran 2026-11-03 19:35:58--19:40:25 UTC during a coordinated quiet
+window for other threads' heavy work. Load averages were
+7.602/9.672/12.302 initially and 6.527/8.589/11.194 finally; this is not a claim
+of an idle operating system. Sizable Linux latency measurements were not run.
+No estimated user storage total is inferred from these fixture observations.
+
+Reproduction and retained evidence
+---------------------------------
+
+The tables above retain the compact results needed for review. Complete
+generated data (native per-script counts, all timed samples, allocation/work
+counts, interop observations and retained-log digests) is kept outside the
+source tree at
+`/private/tmp/worktree-reshare-01a1a279/full-results.json`, with SHA256
+ed1a67e310016d683d9a4ece16ce713bfff7de8c640abe83e5897d054e9b5eb6.
+The reproduction scripts generate fresh results in their requested scratch
+roots; raw run records are not checked into the source tree. The tested
+source archive SHA256 is
+be52c240863e968ecdb6270492afde62014c299485033f0191c02a979f3045b2;
+the native implementation executable SHA256 is
+91c00b13d968e24d2075892cd1c671d7efe70371fc7d6aa1728dfb7c1e0f12d4.
+Later report/evidence commits do not change the tested production source.
+
+Build the pinned ordinary, PR3 and implementation sources in independent
+directories with the flags above. Use new scratch roots on the filesystem
+being tested; the scripts refuse to reuse an existing root. Example commands
+from the implementation source directory, with absolute build paths set in
+the named variables:
+
+----
+python3 contrib/reflink/reshare-validation.py \
+  --git "$implementation/git" --tool "$implementation/t/helper/test-tool" \
+  --ordinary /usr/bin/git --ordinary /opt/homebrew/bin/git \
+  --root "$scratch/interop" --historical --lfs
+
+python3 contrib/reflink/reshare-benchmark.py \
+  --ordinary "$ordinary/git" --pr3 "$pr3/git" \
+  --candidate "$implementation/git" --tool "$implementation/t/helper/test-tool" \
+  --root "$scratch/benchmark" --files 2048 --kib 64 --repetitions 5
+
+cc -Wall -Wextra -O2 contrib/reflink/apfs-reshare-limit.c \
+  -o "$scratch/apfs-reshare-limit"
+mkdir "$scratch/new-apfs-probe"
+"$scratch/apfs-reshare-limit" "$scratch/new-apfs-probe"
+----
+
+For Linux, pass the independently built ordinary control instead of the
+Apple/Homebrew paths and omit --lfs; both donor and target roots must reside
+on the same real XFS/btrfs mount. The APFS probe is macOS-specific and
+intentionally demonstrates the unsupported concurrent-write contract.

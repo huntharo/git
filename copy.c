@@ -322,3 +322,190 @@ int clone_file(const char *dst, const char *src, int mode)
 	return -1;
 #endif
 }
+
+#if defined(__linux__)
+/* Stable Linux uapi, kept local to avoid linux/fs.h/libc header conflicts. */
+struct git_fiemap_extent {
+	uint64_t logical, physical, length, reserved64[2];
+	uint32_t flags, reserved[3];
+};
+struct git_fiemap {
+	uint64_t start, length;
+	uint32_t flags, mapped_extents, extent_count, reserved;
+	struct git_fiemap_extent extents[64];
+};
+struct git_fiemap_header {
+	uint64_t start, length;
+	uint32_t flags, mapped_extents, extent_count, reserved;
+};
+#define GIT_FIEMAP _IOWR('f', 11, struct git_fiemap_header)
+#define GIT_FIEMAP_SYNC 0x1
+#define GIT_FIEMAP_LAST 0x1
+#define GIT_FIEMAP_UNKNOWN 0x2
+#define GIT_FIEMAP_DELALLOC 0x4
+#define GIT_FIEMAP_INLINE 0x200
+#define GIT_FIEMAP_SHARED 0x2000
+
+struct git_dedupe_range {
+	uint64_t src_offset, src_length;
+	uint16_t dest_count, reserved1;
+	uint32_t reserved2;
+};
+struct git_dedupe_info {
+	int64_t dest_fd;
+	uint64_t dest_offset, bytes_deduped;
+	int32_t status;
+	uint32_t reserved;
+};
+#define GIT_DEDUPE_RANGE _IOWR(0x94, 54, struct git_dedupe_range)
+#endif
+
+int get_file_data_usage(int fd, struct file_data_usage *usage)
+{
+	struct stat st;
+
+	memset(usage, 0, sizeof(*usage));
+	if (fstat(fd, &st))
+		return -1;
+	if (!S_ISREG(st.st_mode)) {
+		errno = EINVAL;
+		return -1;
+	}
+	usage->allocated = on_disk_bytes(st);
+#if defined(__APPLE__)
+	{
+		struct attrlist al = { 0 };
+		struct {
+			uint32_t len;
+			attribute_set_t returned;
+			off_t private_size;
+		} __attribute__((packed)) buf;
+
+		memset(&buf, 0, sizeof(buf));
+		al.bitmapcount = ATTR_BIT_MAP_COUNT;
+		al.commonattr = ATTR_CMN_RETURNED_ATTRS;
+		al.forkattr = ATTR_CMNEXT_PRIVATESIZE;
+		if (fgetattrlist(fd, &al, &buf, sizeof(buf), FSOPT_ATTR_CMN_EXTENDED))
+			return -1;
+		if (!(buf.returned.forkattr & ATTR_CMNEXT_PRIVATESIZE) ||
+		    buf.private_size < 0) {
+			errno = ENOTSUP;
+			return -1;
+		}
+		usage->private_bytes = buf.private_size;
+		return 0;
+	}
+#elif defined(__linux__)
+	{
+		struct git_fiemap fm;
+		uint64_t start = 0;
+
+		for (;;) {
+			uint64_t next = start;
+			int last = 0;
+
+			memset(&fm, 0, sizeof(fm));
+			fm.start = start;
+			fm.length = UINT64_MAX - start;
+			fm.flags = GIT_FIEMAP_SYNC;
+			fm.extent_count = ARRAY_SIZE(fm.extents);
+			if (ioctl(fd, GIT_FIEMAP, &fm))
+				return -1;
+			if (!fm.mapped_extents)
+				break;
+			if (fm.mapped_extents > ARRAY_SIZE(fm.extents)) {
+				errno = EIO;
+				return -1;
+			}
+			for (size_t i = 0; i < fm.mapped_extents; i++) {
+				struct git_fiemap_extent *e = &fm.extents[i];
+
+				if (e->flags & (GIT_FIEMAP_UNKNOWN | GIT_FIEMAP_DELALLOC)) {
+					errno = ENOTSUP;
+					return -1;
+				}
+				if (!(e->flags & (GIT_FIEMAP_SHARED | GIT_FIEMAP_INLINE)))
+					usage->private_bytes += e->length;
+				if (e->logical > UINT64_MAX - e->length) {
+					errno = EOVERFLOW;
+					return -1;
+				}
+				next = e->logical + e->length;
+				last |= !!(e->flags & GIT_FIEMAP_LAST);
+			}
+			if (last)
+				break;
+			if (next <= start) {
+				errno = EIO;
+				return -1;
+			}
+			start = next;
+		}
+		if (fstat(fd, &st))
+			return -1;
+		usage->allocated = on_disk_bytes(st);
+		return 0;
+	}
+#else
+	errno = ENOTSUP;
+	return -1;
+#endif
+}
+
+int can_dedupe_file_data(int fd)
+{
+#if defined(__linux__)
+	return fs_can_clone(fd);
+#else
+	(void)fd;
+	return 0;
+#endif
+}
+
+int dedupe_file_data(int src_fd, int dst_fd, uintmax_t size, uintmax_t *done)
+{
+	*done = 0;
+#if defined(__linux__)
+	if (!can_dedupe_file_data(src_fd) || !can_dedupe_file_data(dst_fd)) {
+		errno = ENOTSUP;
+		return -1;
+	}
+	while (*done < size) {
+		struct {
+			struct git_dedupe_range range;
+			struct git_dedupe_info info;
+		} arg;
+		uintmax_t remaining = size - *done;
+		uintmax_t length = remaining < 16 * 1024 * 1024 ?
+			remaining : 16 * 1024 * 1024;
+
+		memset(&arg, 0, sizeof(arg));
+		arg.range.src_offset = *done;
+		arg.range.src_length = length;
+		arg.range.dest_count = 1;
+		arg.info.dest_fd = dst_fd;
+		arg.info.dest_offset = *done;
+		if (ioctl(src_fd, GIT_DEDUPE_RANGE, &arg))
+			return -1;
+		if (arg.info.status == 1)
+			return 1;
+		if (arg.info.status < 0) {
+			errno = -arg.info.status;
+			return -1;
+		}
+		if (arg.info.status || !arg.info.bytes_deduped ||
+		    arg.info.bytes_deduped > length) {
+			errno = EIO;
+			return -1;
+		}
+		*done += arg.info.bytes_deduped;
+	}
+	return 0;
+#else
+	(void)src_fd;
+	(void)dst_fd;
+	(void)size;
+	errno = ENOTSUP;
+	return -1;
+#endif
+}
