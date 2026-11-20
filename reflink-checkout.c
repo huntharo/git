@@ -277,7 +277,7 @@ static void init_source(struct reflink_source *source, const struct worktree *wt
 
 static void resolve_source(struct repository *r)
 {
-	struct worktree **wts = NULL, *main = NULL, *src = NULL;
+	struct worktree **wts = NULL, *main_worktree = NULL, *src = NULL;
 	struct strbuf spec = STRBUF_INIT;
 	const char *config = NULL;
 	int named_source = rc.marker && *rc.marker;
@@ -290,9 +290,9 @@ static void resolve_source(struct repository *r)
 	rc.automatic_source = !named_source && !config;
 	if (rc.automatic_source) {
 		if (r->different_commondir) {
-			main = get_main_worktree(r, 1);
-			if (usable_source(main))
-				src = main;
+			main_worktree = get_main_worktree(r, 1);
+			if (usable_source(main_worktree))
+				src = main_worktree;
 		}
 	} else {
 		/*
@@ -322,7 +322,7 @@ static void resolve_source(struct repository *r)
 	trace2_data_string("reflink", r, "source",
 			   rc.sources[0].path ? rc.sources[0].path : "(none)");
 	strbuf_release(&spec);
-	free_worktree(main);
+	free_worktree(main_worktree);
 	if (wts)
 		free_worktrees(wts);
 }

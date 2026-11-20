@@ -922,10 +922,10 @@ static int add(int ac, const char **av, const char *prefix,
 		 * bare repository with linked worktrees there is none, so
 		 * clone from the worktree we are run from, if any.
 		 */
-		struct worktree *main = get_main_worktree(the_repository, 1);
+		struct worktree *main_worktree = get_main_worktree(the_repository, 1);
 		const char *configured;
 
-		if (main->is_bare &&
+		if (main_worktree->is_bare &&
 		    (repo_config_get_value(the_repository,
 					   "checkout.reflinksource", &configured) ||
 		     !configured || !*configured) &&
@@ -934,7 +934,7 @@ static int add(int ac, const char **av, const char *prefix,
 		    opts.reflink > 0)
 			warning(_("no main reflink source: the main worktree is bare; "
 				  "trying linked worktrees"));
-		free_worktree(main);
+		free_worktree(main_worktree);
 	}
 	opts.reflink_source_spec = source_spec.buf;
 	if (opts.reflink > 0) {
