@@ -82,8 +82,8 @@ ubuntu-*|i386/debian-*|debian-*)
 	then
 		# The preinstalled ln can fail with "Already exists" even with
 		# -f. Remove the destination before installing the GNU link.
-		rm -f /usr/bin/dirname &&
-		ln -s /usr/bin/gnudirname /usr/bin/dirname
+		sudo rm -f /usr/bin/dirname &&
+		sudo ln -s /usr/bin/gnudirname /usr/bin/dirname
 	fi
 
 	case "$distro" in

@@ -1074,6 +1074,50 @@ test_expect_success 'LHS of refspec follows ref disambiguation rules' '
 	)
 '
 
+test_expect_success 'fetch with "./"-prefixed branch.<name>.merge does not mark any ref for merge' '
+	mkdir dotslash-merge-default-refspec &&
+	(
+		cd dotslash-merge-default-refspec &&
+		git init -b main server &&
+		test_commit -C server one &&
+		git -C server branch other &&
+		test_commit -C server two &&
+
+		# The bogus ./refs/heads/main should not match the remote refs/heads/main.
+		git clone server client &&
+		git -C client config branch.main.merge ./refs/heads/main &&
+		git -C client fetch &&
+		{
+			echo "$(git -C server rev-parse main)	not-for-merge" &&
+			echo "$(git -C server rev-parse other)	not-for-merge"
+		} >expect &&
+		cut -f -2 client/.git/FETCH_HEAD >actual &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success 'fetch protocol v0 with "./"-prefixed branch.<name>.merge does not match any remote ref' '
+	mkdir dotslash-merge-fetch-protocol-v0 &&
+	(
+		cd dotslash-merge-fetch-protocol-v0 &&
+		git init -b main server &&
+		test_commit -C server one &&
+		git -C server branch other &&
+		test_commit -C server two &&
+
+		# Omit refs/heads/main from the fetch refspec so that the merge
+		# source is instead looked up among the refs the remote advertised.
+		git clone server client-v0 &&
+		git -C client-v0 config remote.origin.fetch \
+			+refs/heads/other:refs/remotes/origin/other &&
+		git -C client-v0 config branch.main.merge ./refs/heads/main &&
+		git -C client-v0 -c protocol.version=0 fetch &&
+		echo "$(git -C server rev-parse other)	not-for-merge" >expect &&
+		cut -f -2 client-v0/.git/FETCH_HEAD >actual &&
+		test_cmp expect actual
+	)
+'
+
 test_expect_success 'fetch.writeCommitGraph' '
 	git clone three write &&
 	(
@@ -2001,6 +2045,40 @@ test_expect_success "backfill tags when providing a refspec" '
 	test_cmp expect actual
 '
 
+test_expect_success 'backfilling tags advertises fetched refs as haves' '
+	test_when_finished rm -rf source target trace &&
+
+	git init source &&
+	test_commit_bulk -C source 10 &&
+	git -C source tag -a tag -m tag HEAD~2 &&
+	HEAD_OID=$(git -C source rev-parse HEAD) &&
+
+	git init target &&
+	git -C target remote add origin ../source &&
+	GIT_TEST_PROTOCOL_VERSION=2 GIT_TRACE_PACKET=$(pwd)/trace \
+		git -C target fetch --depth 5 origin &&
+
+	test_grep "fetch> have $HEAD_OID" trace &&
+	git -C target rev-parse --verify refs/tags/tag
+'
+
+test_expect_success 'backfilling tags advertises fetched refs as haves even with atomic' '
+	test_when_finished rm -rf source target trace &&
+
+	git init source &&
+	test_commit_bulk -C source 10 &&
+	git -C source tag -a tag -m tag HEAD~2 &&
+	HEAD_OID=$(git -C source rev-parse HEAD) &&
+
+	git init target &&
+	git -C target remote add origin ../source &&
+	GIT_TEST_PROTOCOL_VERSION=2 GIT_TRACE_PACKET=$(pwd)/trace \
+		git -C target fetch --atomic --depth 5 origin &&
+
+	test_grep "fetch> have $HEAD_OID" trace &&
+	git -C target rev-parse --verify refs/tags/tag
+'
+
 test_expect_success REFFILES "FETCH_HEAD is updated even if ref updates fail" '
 	test_when_finished rm -rf base repo &&
 
@@ -2061,6 +2139,31 @@ test_expect_success REFFILES "upstream tracking info is added even with conflict
 		git config get branch.main.remote >actual &&
 		echo "origin" >expect &&
 		test_cmp expect actual
+	)
+'
+
+test_expect_success REFFILES "upstream tracking info is added with conflicts and backfilled tags" '
+	test_when_finished rm -rf base repo &&
+
+	git init --initial-branch=main base &&
+	test_commit -C base one &&
+	test_commit -C base two &&
+	git -C base branch foo &&
+	# Backfilling only takes place for tags which are not pointing at tips.
+	git -C base tag -a annotated -m annotated HEAD~1 &&
+
+	git init --bare --initial-branch=main repo &&
+	(
+		cd repo &&
+		git remote add origin ../base &&
+		mkdir -p refs/remotes/origin &&
+		>refs/remotes/origin/foo.lock &&
+		test_must_fail git fetch origin --set-upstream main \
+			"+refs/heads/*:refs/remotes/origin/*" &&
+		git config get branch.main.remote >actual &&
+		echo "origin" >expect &&
+		test_cmp expect actual &&
+		git rev-parse --verify refs/tags/annotated
 	)
 '
 
