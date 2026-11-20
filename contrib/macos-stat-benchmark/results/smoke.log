@@ -1,0 +1,19 @@
+small: unmapped (0 mapped) complete
+small: one-mapped-unchanged (1 mapped) complete
+small: one-mapped-modified (1 mapped) complete
+small: many-mapped-unchanged (64 mapped) complete
+small: many-mapped-modified (64 mapped) complete
+one-large: unmapped (0 mapped) complete
+one-large: one-mapped-unchanged (1 mapped) complete
+one-large: one-mapped-modified (1 mapped) complete
+ten-large: unmapped (0 mapped) complete
+ten-large: one-mapped-unchanged (1 mapped) complete
+ten-large: one-mapped-modified (1 mapped) complete
+ten-large: many-mapped-unchanged (10 mapped) complete
+ten-large: many-mapped-modified (10 mapped) complete
+mixed: unmapped (0 mapped) complete
+mixed: one-mapped-unchanged (1 mapped) complete
+mixed: one-mapped-modified (1 mapped) complete
+mixed: many-mapped-unchanged (2 mapped) complete
+mixed: many-mapped-modified (2 mapped) complete
+contrib/macos-stat-benchmark/local/smoke.json

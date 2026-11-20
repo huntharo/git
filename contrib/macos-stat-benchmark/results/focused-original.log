@@ -1,0 +1,210 @@
+sysctl: sysctl fmt -1 1024 1: Operation not permitted
+Argument "" isn't numeric in numeric gt (>) at /Users/huntharo/.codex/worktrees/mw9h0cmk/git/t/chainlint.pl line 266.
+t0010-racy-git.sh ....................... 
+TAP version 13
+pragma +strict
+ok 1 - Racy git trial #0 part A
+ok 2 - Racy git trial #0 part B
+ok 3 - Racy git trial #1 part A
+ok 4 - Racy git trial #1 part B
+ok 5 - Racy git trial #2 part A
+ok 6 - Racy git trial #2 part B
+ok 7 - Racy git trial #3 part A
+ok 8 - Racy git trial #3 part B
+ok 9 - Racy git trial #4 part A
+ok 10 - Racy git trial #4 part B
+# passed all 10 test(s)
+1..10
+ok
+sysctl: sysctl fmt -1 1024 1: Operation not permitted
+Argument "" isn't numeric in numeric gt (>) at /Users/huntharo/.codex/worktrees/mw9h0cmk/git/t/chainlint.pl line 266.
+t0011-mmap-stat.sh ...................... 
+TAP version 13
+pragma +strict
+ok 1 - setup ordinary files with non-racy timestamps
+ok 2 - experimental comparator distrusts all stat data
+ok 3 - a failed generation query is not trusted
+ok 4 - an unchanged shared mapping is clean
+ok 5 - mapped content comparison applies clean filters
+ok 6 - diff and status detect mmap writes with unchanged timestamps
+ok 7 - index refresh does not hide a subsequent mapped write
+ok 8 - a shared mapping that can gain write protection is checked
+ok 9 - private writes do not modify the file
+ok 10 - read-only mappings remain clean
+ok 11 - assume-unchanged remains an explicit opt-out
+ok 12 - skip-worktree remains an explicit opt-out
+ok 13 - fsmonitor validity does not hide mapped writes
+ok 14 - preloading the index does not hide mapped writes
+ok 15 - prefixed checkout compares mapped destination bytes
+ok 16 - prefixed comparison uses the indexed path for clean filters
+# passed all 16 test(s)
+1..16
+ok
+sysctl: sysctl fmt -1 1024 1: Operation not permitted
+Argument "" isn't numeric in numeric gt (>) at /Users/huntharo/.codex/worktrees/mw9h0cmk/git/t/chainlint.pl line 266.
+t2104-update-index-skip-worktree.sh ..... 
+TAP version 13
+pragma +strict
+ok 1 - setup
+ok 2 - index is at version 2
+ok 3 - update-index --skip-worktree
+ok 4 - index is at version 3 after having some skip-worktree entries
+ok 5 - ls-files -t
+ok 6 - update-index --no-skip-worktree
+ok 7 - index version is back to 2 when there is no skip-worktree entry
+# passed all 7 test(s)
+1..7
+ok
+sysctl: sysctl fmt -1 1024 1: Operation not permitted
+Argument "" isn't numeric in numeric gt (>) at /Users/huntharo/.codex/worktrees/mw9h0cmk/git/t/chainlint.pl line 266.
+t2106-update-index-assume-unchanged.sh .. 
+TAP version 13
+pragma +strict
+ok 1 - setup
+ok 2 - do not switch branches with dirty file
+# passed all 2 test(s)
+1..2
+ok
+sysctl: sysctl fmt -1 1024 1: Operation not permitted
+Argument "" isn't numeric in numeric gt (>) at /Users/huntharo/.codex/worktrees/mw9h0cmk/git/t/chainlint.pl line 266.
+t7519-status-fsmonitor.sh ............... 
+TAP version 13
+pragma +strict
+ok 1 - incompatible bare repo
+ok 2 - run fsmonitor-daemon in bare repo
+ok 3 # skip run fsmonitor-daemon in virtual repo (missing MINGW of MINGW,FSMONITOR_DAEMON)
+ok 4 - setup
+ok 5 - fsmonitor extension is off by default
+ok 6 - update-index --fsmonitor" adds the fsmonitor extension
+ok 7 - update-index --no-fsmonitor" removes the fsmonitor extension
+ok 8 - update-index --fsmonitor-valid" sets the fsmonitor valid bit
+ok 9 - update-index --no-fsmonitor-valid" clears the fsmonitor valid bit
+ok 10 - all files returned by integration script get flagged as invalid
+ok 11 - newly added files are marked valid
+ok 12 - all unmodified files get marked valid
+ok 13 - *only* files returned by the integration script get flagged as invalid
+ok 14 - refresh_index() invalidates fsmonitor cache
+ok 15 - setup preloadIndex to false
+ok 16 - setup untracked cache to false
+ok 17 - compare status with and without fsmonitor
+not ok 18 - status doesn't detect unreported modifications
+#	
+#				test_hook --clobber fsmonitor-test<<-\EOF &&
+#				printf "last_update_token\0"
+#				:>marker
+#				EOF
+#				clean_repo &&
+#				git status &&
+#				test_path_is_file marker &&
+#				dirty_repo &&
+#				rm -f marker &&
+#				git status >actual &&
+#				test_path_is_file marker &&
+#				test_grep ! "Changes not staged for commit:" actual &&
+#				if test $uc_val = true
+#				then
+#					test_grep ! "Untracked files:" actual
+#				fi &&
+#				if test $uc_val = false
+#				then
+#					test_grep "Untracked files:" actual
+#				fi &&
+#				rm -f marker
+#			
+ok 19 - setup untracked cache to true
+ok 20 - compare status with and without fsmonitor
+not ok 21 - status doesn't detect unreported modifications
+#	
+#				test_hook --clobber fsmonitor-test<<-\EOF &&
+#				printf "last_update_token\0"
+#				:>marker
+#				EOF
+#				clean_repo &&
+#				git status &&
+#				test_path_is_file marker &&
+#				dirty_repo &&
+#				rm -f marker &&
+#				git status >actual &&
+#				test_path_is_file marker &&
+#				test_grep ! "Changes not staged for commit:" actual &&
+#				if test $uc_val = true
+#				then
+#					test_grep ! "Untracked files:" actual
+#				fi &&
+#				if test $uc_val = false
+#				then
+#					test_grep "Untracked files:" actual
+#				fi &&
+#				rm -f marker
+#			
+ok 22 - setup preloadIndex to true
+ok 23 - setup untracked cache to false
+ok 24 - compare status with and without fsmonitor
+not ok 25 - status doesn't detect unreported modifications
+#	
+#				test_hook --clobber fsmonitor-test<<-\EOF &&
+#				printf "last_update_token\0"
+#				:>marker
+#				EOF
+#				clean_repo &&
+#				git status &&
+#				test_path_is_file marker &&
+#				dirty_repo &&
+#				rm -f marker &&
+#				git status >actual &&
+#				test_path_is_file marker &&
+#				test_grep ! "Changes not staged for commit:" actual &&
+#				if test $uc_val = true
+#				then
+#					test_grep ! "Untracked files:" actual
+#				fi &&
+#				if test $uc_val = false
+#				then
+#					test_grep "Untracked files:" actual
+#				fi &&
+#				rm -f marker
+#			
+ok 26 - setup untracked cache to true
+ok 27 - compare status with and without fsmonitor
+not ok 28 - status doesn't detect unreported modifications
+#	
+#				test_hook --clobber fsmonitor-test<<-\EOF &&
+#				printf "last_update_token\0"
+#				:>marker
+#				EOF
+#				clean_repo &&
+#				git status &&
+#				test_path_is_file marker &&
+#				dirty_repo &&
+#				rm -f marker &&
+#				git status >actual &&
+#				test_path_is_file marker &&
+#				test_grep ! "Changes not staged for commit:" actual &&
+#				if test $uc_val = true
+#				then
+#					test_grep ! "Untracked files:" actual
+#				fi &&
+#				if test $uc_val = false
+#				then
+#					test_grep "Untracked files:" actual
+#				fi &&
+#				rm -f marker
+#			
+ok 29 - splitting the index results in the same state
+ok 30 - ignore .git changes when invalidating UNTR
+ok 31 - discard_index() also discards fsmonitor info
+ok 32 - status succeeds after staging/unstaging
+ok 33 - status succeeds with sparse index
+# failed 4 among 33 test(s)
+1..33
+Dubious, test returned 1 (wstat 256, 0x100)
+Failed 4/33 subtests 
+	(less 1 skipped subtest: 28 okay)
+
+Test Summary Report
+-------------------
+t7519-status-fsmonitor.sh             (Wstat: 256 Tests: 33 Failed: 4)
+  Failed tests:  18, 21, 25, 28
+  Non-zero exit status: 1
+Files=5, Tests=68, 17 wallclock secs ( 0.03 usr  0.02 sys +  2.06 cusr  2.71 csys =  4.82 CPU)
+Result: FAIL

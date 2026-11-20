@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "expected": {
+    "getattrlist_calls": 1,
+    "read_bytes": 128,
+    "pread_bytes": 64,
+    "mmap_requested_bytes": 16384
+  },
+  "observed": {
+    "pid": 46249,
+    "getattrlist_calls": 1,
+    "read_bytes": 128,
+    "pread_bytes": 64,
+    "mmap_requested_bytes": 16384
+  }
+}

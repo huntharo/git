@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "known_fixture_bytes": 16384,
+  "rows": [
+    {
+      "pid": 88717,
+      "getattrlist_calls": 1,
+      "read_bytes": 0,
+      "pread_bytes": 0,
+      "mmap_requested_bytes": 0
+    },
+    {
+      "pid": 88730,
+      "getattrlist_calls": 1,
+      "read_bytes": 0,
+      "pread_bytes": 0,
+      "mmap_requested_bytes": 16384
+    }
+  ]
+}

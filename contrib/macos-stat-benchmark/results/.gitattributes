@@ -1,0 +1,2 @@
+# Preserve verbatim TAP/build transcripts, including their whitespace.
+*.log -whitespace

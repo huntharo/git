@@ -1,0 +1,17 @@
+{
+  "native_compile_command": "cc -O2 -std=c99 -Wall -Wextra -Werror (plus -dynamiclib for count-io.c)",
+  "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "cargo": "cargo 1.94.1 (29ea6fb6a 2026-03-24)",
+  "proof_source_sha256": {
+    "parent-rationale.md": "09f9d5c9a43726bf84d0bd8a1979be669f445b4cf359785e359093b2a7a5b0bc",
+    "combined-metadata.c": "db86d0b50455d4bd4fb21059f563c3c8180da644f5d676cdbd530fa4f71eca72",
+    "parent-combined-metadata.jsonl": "1cd767d99d000375c65697d653dd85620211253cea3c3cbe4b39d470a84fa31a"
+  },
+  "helper_binary_sha256": {
+    "mapper": "2cee1ac0be0ce5c663500dcc94bba778d88ef1f92bdeadc5943e8b7c044f5bba",
+    "count-io.dylib": "85a040961a08a2c0ea6b98d75cd62a8f7b37e77e63395abdf409468b0f3a061d",
+    "count-control": "ccb46c5be025b8b42b6dfab25c00ed8c3c9a1c35e52b87b7000ab4673db9e886",
+    "metadata-bench": "a32f4822e867096548a4c8925947c310ecd141b9c6dd30eddc696fce7e8b16bb",
+    "combined-metadata": "6a732d308b3378e57e45319230452144300971804b05965026a919afd9c9e0c2"
+  }
+}
