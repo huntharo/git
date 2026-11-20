@@ -59,6 +59,24 @@ missing, corrupt or sparse source index as an optimization failure without
 applying the recipient's sparse or fsmonitor state to the other worktree.
 The source index itself is never written.
 
+Without a nonempty source marker or `checkout.reflinkSource`, Git prefers
+main and can resolve it without enumerating linked worktrees. The first
+failed attempt lazily enumerates registered linked worktrees, sorts them
+by administrative ID, and admits at most four usable roots on the
+recipient's filesystem. It filters off-volume roots before applying the
+limit. The candidate list and each gently read raw index are cached for
+the process. Empty blobs and disabled stat/ctime checks do not start
+alternate search. Explicit selections retain their single-source
+contract, including marker/config/main fallback for an unavailable worktree.
+
+Enumeration costs O(W log W) for W registered worktrees. Subsequent paths
+do at most five index lookups, and retained memory is proportional to the
+sum of the index sizes. Each parallel checkout worker has its own cache.
+A failed clone or unequal snapshot can advance the same bounded cursor.
+Each opened descriptor retains its own source-index context for later
+stat checks. Recipient output, including any filter result, is verified
+against each candidate snapshot.
+
 A donor needs a stage-zero regular entry with the requested blob ID, without
 skip-worktree, intent-to-add or remove flags. Empty files are created
 normally. The source must be on the recipient's filesystem and support the

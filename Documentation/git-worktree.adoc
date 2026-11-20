@@ -269,12 +269,15 @@ To remove a locked worktree, specify `--force` twice.
 	clone only when its bytes match ordinary checkout output. The normal
 	filter still runs for paths such as LFS-managed files.
 	See `checkout.reflink` in linkgit:git-config[1]. Untracked and ignored
-	files are never copied. The reflink source is the worktree named by
-	`--reflink-source` or `checkout.reflinkSource`, else the main
-	worktree (or, if that is bare, the worktree `add` is run from).
+	files are never copied. Git uses the worktree named by
+	`--reflink-source` or `checkout.reflinkSource` when specified.
+	Otherwise it prefers the main worktree (or the invoking worktree
+	when adding from a linked worktree of a bare repository). With
+	automatic selection, a miss can try up to four same-filesystem
+	linked worktrees in administrative ID order.
 +
-When `checkout.reflink` is unset, `add` uses reflinks by default when
-it has a source. Both this default and `--reflink` record the source
+When `checkout.reflink` is unset, `add` uses reflinks by default.
+Both this default and `--reflink` record the source
 preference in the new worktree (see `worktrees/<id>/reflink-source`
 in linkgit:gitrepository-layout[5]). That marker also enables hard
 reset to re-share eligible files already on disk.

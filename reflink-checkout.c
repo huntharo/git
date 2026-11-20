@@ -149,6 +149,17 @@ enum reflink_test_mode {
 	REFLINK_TEST_CORRUPT,
 };
 
+/* Bound retained indexes and repeated misses, including in checkout workers. */
+#define MAX_ALTERNATE_SOURCES 4
+
+struct reflink_source {
+	char *path;
+	char *gitdir;
+	char *index_path;
+	struct index_state *index;
+	unsigned unusable : 1;
+};
+
 /*
  * Per-process state. It belongs to the first repository that checks
  * out a file; checkouts in any other repository in the same process
@@ -161,14 +172,14 @@ static struct {
 		 enabled : 1,
 		 source_resolved : 1,
 		 resharing : 1,
-		 source_unusable : 1,
+		 automatic_source : 1,
+		 alternates_resolved : 1,
 		 scratch_unusable : 1;
 	enum reflink_test_mode test;
 	char *marker;		/* contents of $GIT_DIR/reflink-source, or NULL */
-	char *source_path;	/* working tree of the reflink source */
-	char *source_gitdir;
-	char *source_index_path;
-	struct index_state *source_index;
+	/* Slot zero is reserved for the primary, even when unavailable. */
+	struct reflink_source sources[1 + MAX_ALTERNATE_SOURCES];
+	size_t sources_nr;
 	unsigned clone_errors;	/* failed clones while none succeeded */
 	unsigned clones_ok;
 } rc;
@@ -257,88 +268,128 @@ static int usable_source(const struct worktree *wt)
 	       is_directory(wt->path);
 }
 
+static void init_source(struct reflink_source *source, const struct worktree *wt)
+{
+	source->path = xstrdup(wt->path);
+	source->gitdir = get_worktree_git_dir(wt);
+	source->index_path = xstrdup(worktree_git_path(wt, "index"));
+}
+
 static void resolve_source(struct repository *r)
 {
-	struct worktree **wts, **p, *src = NULL;
+	struct worktree **wts = NULL, *main_worktree = NULL, *src = NULL;
 	struct strbuf spec = STRBUF_INIT;
 	const char *config = NULL;
 	int named_source = rc.marker && *rc.marker;
 
 	rc.source_resolved = 1;
+	rc.sources_nr = 1;
 	if (repo_config_get_value(r, "checkout.reflinksource", &config) ||
 	    (config && !*config))
 		config = NULL;
-	/*
-	 * Without a named source, the main worktree has no donor. Avoid
-	 * enumerating worktrees in the common case.
-	 */
-	if (!r->different_commondir && !named_source && !config)
-		goto done;
-	wts = get_worktrees_without_reading_head(r);
-
-	/*
-	 * The first usable one of: the worktree named by our reflink-source
-	 * file, checkout.reflinkSource (a worktree path or name), the main
-	 * worktree. A missing, bare or self candidate is not an error.
-	 */
-	if (named_source) {
-		for (p = wts; *p && !src; p++) {
-			worktree_spec(*p, &spec);
-			if (!strcmp(spec.buf, rc.marker) && usable_source(*p))
-				src = *p;
+	rc.automatic_source = !named_source && !config;
+	if (rc.automatic_source) {
+		if (r->different_commondir) {
+			main_worktree = get_main_worktree(r, 1);
+			if (usable_source(main_worktree))
+				src = main_worktree;
 		}
+	} else {
+		/*
+		 * Preserve marker, config and main precedence even when a
+		 * named worktree has gone away.
+		 */
+		wts = get_worktrees_without_reading_head(r);
+		if (named_source) {
+			for (struct worktree **p = wts; *p && !src; p++) {
+				worktree_spec(*p, &spec);
+				if (!strcmp(spec.buf, rc.marker) && usable_source(*p))
+					src = *p;
+			}
+		}
+		if (!src && config) {
+			struct worktree *wt = find_worktree(wts, NULL, config);
+			if (usable_source(wt))
+				src = wt;
+		}
+		if (!src && usable_source(wts[0]))
+			src = wts[0];
 	}
-	if (!src && config) {
-		struct worktree *wt = find_worktree(wts, NULL, config);
-		if (usable_source(wt))
-			src = wt;
-	}
-	if (!src && usable_source(wts[0]))
-		src = wts[0];
 
-	/*
-	 * Neither is one on a filesystem we cannot clone on: find that out
-	 * now, before reading its index.
-	 */
 	if (src && same_filesystem(src->path, r->worktree) &&
-	    path_fs_can_clone(src->path)) {
-		rc.source_path = xstrdup(src->path);
-		rc.source_gitdir = get_worktree_git_dir(src);
-		rc.source_index_path = xstrdup(worktree_git_path(src, "index"));
-	}
-	strbuf_release(&spec);
-	free_worktrees(wts);
-done:
+	    path_fs_can_clone(src->path))
+		init_source(&rc.sources[0], src);
 	trace2_data_string("reflink", r, "source",
-			   rc.source_path ? rc.source_path : "(none)");
+			   rc.sources[0].path ? rc.sources[0].path : "(none)");
+	strbuf_release(&spec);
+	free_worktree(main_worktree);
+	if (wts)
+		free_worktrees(wts);
 }
 
-static struct index_state *source_index(struct repository *r)
+static int compare_worktree_ids(const void *va, const void *vb)
 {
-	if (!rc.source_resolved)
-		resolve_source(r);
-	if (!rc.source_path || rc.source_unusable)
+	const struct worktree *a = *(const struct worktree **)va;
+	const struct worktree *b = *(const struct worktree **)vb;
+
+	return strcmp(a->id ? a->id : "", b->id ? b->id : "");
+}
+
+static void resolve_alternates(struct repository *r)
+{
+	struct worktree **wts;
+	struct stat target;
+	size_t nr = 0;
+
+	rc.alternates_resolved = 1;
+	if (stat(r->worktree, &target) || !path_fs_can_clone(r->worktree))
+		return;
+	trace2_counter_add(TRACE2_COUNTER_ID_REFLINK_ALTERNATE_ENUMERATION, 1);
+	wts = get_worktrees_without_reading_head(r);
+	while (wts[nr])
+		nr++;
+	QSORT(wts, nr, compare_worktree_ids);
+	for (size_t i = 0; i < nr && rc.sources_nr < ARRAY_SIZE(rc.sources); i++) {
+		struct worktree *wt = wts[i];
+		struct stat donor;
+
+		/* Reject off-volume roots before they consume a slot. */
+		if (!wt->id || wt->is_bare || wt->is_current || !wt->path ||
+		    stat(wt->path, &donor) || !S_ISDIR(donor.st_mode) ||
+		    donor.st_dev != target.st_dev)
+			continue;
+		init_source(&rc.sources[rc.sources_nr++], wt);
+		trace2_data_string("reflink", r, "alternate-source", wt->path);
+	}
+	free_worktrees(wts);
+}
+
+static struct index_state *source_index(struct repository *r,
+					struct reflink_source *source)
+{
+	if (!source->path || source->unusable)
 		return NULL;
-	if (!rc.source_index) {
-		rc.source_index = xmalloc(sizeof(*rc.source_index));
-		index_state_init(rc.source_index, r);
+	if (!source->index) {
+		if (source != &rc.sources[0])
+			trace2_counter_add(TRACE2_COUNTER_ID_REFLINK_ALTERNATE_INDEX, 1);
+		source->index = xmalloc(sizeof(*source->index));
+		index_state_init(source->index, r);
 		/*
 		 * Read it as it is on disk, and never die over it: a
 		 * reflink source whose index we cannot read only means
-		 * that nothing gets cloned.
+		 * that nothing gets cloned from it.
 		 */
-		if (read_index_from_flags(rc.source_index,
-					  rc.source_index_path,
-					  rc.source_gitdir,
+		if (read_index_from_flags(source->index, source->index_path,
+					  source->gitdir,
 					  READ_INDEX_GENTLY | READ_INDEX_RAW) < 0) {
-			release_index(rc.source_index);
-			index_state_init(rc.source_index, r);
-			rc.source_unusable = 1;
+			release_index(source->index);
+			index_state_init(source->index, r);
+			source->unusable = 1;
 			trace2_data_string("reflink", r, "source-index",
 					   "unreadable");
 		}
 	}
-	return rc.source_unusable ? NULL : rc.source_index;
+	return source->unusable ? NULL : source->index;
 }
 
 /*
@@ -388,11 +439,12 @@ static int has_worktree_leading_dirs(const char *path, const char *worktree)
 	return slash && has_dirs_only_path(path, slash - path, strlen(worktree));
 }
 
-static int open_donor(struct repository *r, const struct cache_entry *ce,
-		      struct strbuf *donor, const struct cache_entry **source_ce,
-		      enum donor_use use)
+static int open_source_donor(struct repository *r, struct reflink_source *source,
+			     const struct cache_entry *ce, struct strbuf *donor,
+			     const struct cache_entry **source_ce,
+			     enum donor_use use)
 {
-	struct index_state *src = source_index(r);
+	struct index_state *src = source_index(r, source);
 	const struct cache_entry *sce;
 	struct stat st;
 	size_t size;
@@ -433,8 +485,8 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 	}
 
 	strbuf_reset(donor);
-	strbuf_addf(donor, "%s/%s", rc.source_path, ce->name);
-	if (!has_worktree_leading_dirs(donor->buf, rc.source_path))
+	strbuf_addf(donor, "%s/%s", source->path, ce->name);
+	if (!has_worktree_leading_dirs(donor->buf, source->path))
 		goto dirty;
 	/*
 	 * Skip anything the reflink source's own index would call
@@ -460,6 +512,36 @@ static int open_donor(struct repository *r, const struct cache_entry *ce,
 dirty:
 	count(TRACE2_COUNTER_ID_REFLINK_SOURCE_DIRTY);
 	return -1;
+}
+
+/* The caller can resume the bounded search after rejecting a candidate. */
+static int open_donor(struct repository *r, const struct cache_entry *ce,
+		      struct strbuf *donor, const struct cache_entry **source_ce,
+		      enum donor_use use, size_t *cursor, struct reflink_source **source)
+{
+	if (!rc.source_resolved)
+		resolve_source(r);
+	for (;;) {
+		int fd;
+
+		if (*cursor) {
+			if (!rc.automatic_source ||
+			    is_empty_blob_oid(&ce->oid, r->hash_algo) ||
+			    !repo_config_values(r)->check_stat ||
+			    !repo_config_values(r)->trust_ctime)
+				return -1;
+			if (!rc.alternates_resolved)
+				resolve_alternates(r);
+		}
+		if (*cursor >= rc.sources_nr)
+			return -1;
+		*source = &rc.sources[(*cursor)++];
+		if (*source != &rc.sources[0])
+			trace2_counter_add(TRACE2_COUNTER_ID_REFLINK_ALTERNATE_LOOKUP, 1);
+		fd = open_source_donor(r, *source, ce, donor, source_ce, use);
+		if (fd >= 0)
+			return fd;
+	}
 }
 
 /* Compare the cloned snapshot against the recipient output. */
@@ -644,6 +726,8 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 		state->istate->repo : the_repository;
 	static struct strbuf donor = STRBUF_INIT;
 	const struct cache_entry *source_ce = NULL;
+	struct reflink_source *source = NULL;
+	size_t cursor = 0;
 	int src_fd = -1, fd, scratch = 0, compare_output;
 
 	if (!rc.initialized)
@@ -653,11 +737,13 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 		return -1;
 	compare_output = output || !convert_to_working_tree_is_noop_ca(ca);
 
+retry:
 	if (rc.test != REFLINK_TEST_CORRUPT)
 		src_fd = open_donor(r, ce, &donor, &source_ce,
-				    compare_output ? DONOR_CONVERTED_CHECKOUT : DONOR_RAW_CHECKOUT);
+				    compare_output ? DONOR_CONVERTED_CHECKOUT : DONOR_RAW_CHECKOUT,
+				    &cursor, &source);
 	if (src_fd < 0) {
-		if (!rc.test || compare_output)
+		if (!rc.test || compare_output || source_ce)
 			return -1;
 		src_fd = open_scratch_donor(r, ce);
 		if (src_fd < 0)
@@ -683,8 +769,8 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 			return -1;
 		count(TRACE2_COUNTER_ID_REFLINK_CLONE_FAILED);
 		/*
-		 * Stop trying once the filesystem says it cannot clone,
-		 * or after a run of failures without a single success
+		 * Stop trying this source once the filesystem says it
+		 * cannot clone, or after a run of failures without a success
 		 * (e.g. btrfs refusing every file of a nodatacow tree).
 		 */
 		if (clone_unsupported(err) ||
@@ -692,8 +778,10 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 			if (scratch)
 				rc.scratch_unusable = 1;
 			else
-				rc.source_unusable = 1;
+				source->unusable = 1;
 		}
+		if (!scratch)
+			goto retry;
 		return -1;
 	}
 	rc.clones_ok++;
@@ -704,13 +792,14 @@ int reflink_checkout_entry(const struct cache_entry *ce,
 	 * never copy donor stat data into the recipient's cache entry.
 	 */
 	if ((!scratch && (fstat(src_fd, st) ||
-			 donor_changed(rc.source_index, source_ce, st))) ||
+			 donor_changed(source->index, source_ce, st))) ||
 	    (scratch && rc.test == REFLINK_TEST_CORRUPT) ||
 	    !clone_matches_output(r, ce, ca, fd, output, output_size)) {
 		count(TRACE2_COUNTER_ID_REFLINK_VERIFY_FAILED);
 		close(src_fd);
 		close(fd);
-		unlink(path);
+		if (!unlink(path) && !scratch)
+			goto retry;
 		return -1;
 	}
 	close(src_fd);
@@ -994,7 +1083,8 @@ int reflink_maybe_reshare_worktree(struct repository *r)
 		return 0;
 	if (!rc.source_resolved)
 		resolve_source(r);
-	if (!rc.source_path || rc.source_unusable)
+	if (!rc.automatic_source &&
+	    (!rc.sources[0].path || rc.sources[0].unusable))
 		return 0;
 
 	sample_size = index->cache_nr < SAMPLE_LIMIT ? index->cache_nr : SAMPLE_LIMIT;
@@ -1004,8 +1094,10 @@ int reflink_maybe_reshare_worktree(struct repository *r)
 		size_t pos = (uintmax_t)sampled * (index->cache_nr - 1) /
 			(sample_size - 1);
 		const struct cache_entry *ce = index->cache[pos], *source_ce;
+		struct reflink_source *source;
+		size_t cursor = 0;
 		enum file_data_sharing sharing;
-		struct stat target, source;
+		struct stat target, donor_stat;
 		int fd;
 
 		sampled++;
@@ -1033,13 +1125,19 @@ int reflink_maybe_reshare_worktree(struct repository *r)
 #endif
 		    reshare_target_stat_changed(index, ce, &target))
 			continue;
-		fd = open_donor(r, ce, &donor, &source_ce, DONOR_IN_PLACE);
-		if (fd < 0)
-			continue;
-		if (!fstat(fd, &source) && source.st_dev == target.st_dev &&
-		    source.st_ino != target.st_ino && source.st_size == target.st_size)
-			private_matches++;
-		close(fd);
+		while ((fd = open_donor(r, ce, &donor, &source_ce, DONOR_IN_PLACE,
+					&cursor, &source)) >= 0) {
+			int matches = !fstat(fd, &donor_stat) &&
+				donor_stat.st_dev == target.st_dev &&
+				donor_stat.st_ino != target.st_ino &&
+				donor_stat.st_size == target.st_size;
+
+			close(fd);
+			if (matches) {
+				private_matches++;
+				break;
+			}
+		}
 	}
 	rc.resharing = 0;
 	strbuf_release(&path);
@@ -1117,8 +1215,6 @@ int reflink_reshare_worktree(struct repository *r,
 		total.failed++;
 		goto done;
 	}
-	if (!rc.source_resolved)
-		resolve_source(r);
 	if (!opts->quiet && opts->porcelain) {
 		printf("reflink 1%cworktree ", term);
 		write_name_quoted(r->worktree, stdout, term);
@@ -1128,11 +1224,14 @@ int reflink_reshare_worktree(struct repository *r,
 	for (size_t i = 0; i < r->index->cache_nr; i++) {
 		struct cache_entry *ce = r->index->cache[i];
 		const struct cache_entry *source_ce = NULL;
+		struct reflink_source *source;
+		size_t cursor = 0;
 		struct reshare_result result = { .status = "skipped", .reason = "ineligible" };
 		struct stat before, after, source_before, source_after, source_named, named;
 		struct conv_attrs ca;
 		struct object_id oid;
 		int fd = -1, src_fd = -1, write_fd = -1, hash_fd, ret, changed;
+		int target_checked = 0;
 #ifdef __APPLE__
 		struct strbuf tempdir = STRBUF_INIT, clone_path = STRBUF_INIT;
 		struct tempfile *clone_temp = NULL;
@@ -1195,21 +1294,28 @@ int reflink_reshare_worktree(struct repository *r,
 			result.reason = "target-dirty";
 			goto record;
 		}
-		src_fd = open_donor(r, ce, &donor, &source_ce, DONOR_IN_PLACE);
-		if (src_fd < 0 || fstat(src_fd, &source_before)) {
+find_donor:
+		src_fd = open_donor(r, ce, &donor, &source_ce, DONOR_IN_PLACE,
+				    &cursor, &source);
+		if (src_fd < 0) {
+			if (!source_ce)
+				result.reason = "no-donor";
+			goto record;
+		}
+		if (fstat(src_fd, &source_before)) {
 			result.reason = "no-donor";
 			goto record;
 		}
 		if (source_before.st_dev != before.st_dev) {
 			result.reason = "different-filesystem";
-			goto record;
+			goto next_donor;
 		}
 		if (source_before.st_ino == before.st_ino ||
 		    source_before.st_size != before.st_size) {
 			result.reason = "representation-differs";
-			goto record;
+			goto next_donor;
 		}
-		if (changed) {
+		if (!target_checked && changed) {
 			/* Ordinary Git would content-check this stat/racy ambiguity. */
 			convert_attrs(r->index, &ca, ce->name);
 			if (ca.drv || ca.working_tree_encoding) {
@@ -1234,10 +1340,11 @@ int reflink_reshare_worktree(struct repository *r,
 				result.reason = "target-changed";
 				goto record;
 			}
-		} else {
+		} else if (!target_checked) {
 			/* No hash, object read, attribute lookup or filter invocation. */
 			total.stat_clean++;
 		}
+		target_checked = 1;
 
 		if (opts->dry_run) {
 			total.userspace_compared++;
@@ -1245,11 +1352,13 @@ int reflink_reshare_worktree(struct repository *r,
 			ret = same_fd_bytes(src_fd, fd, before.st_size);
 			if (ret != 1) {
 				result.reason = ret ? "read-error" : "representation-differs";
+				if (!ret)
+					goto next_donor;
 				goto record;
 			}
 			if (fstat(fd, &after) || !same_file_stat(&before, &after) ||
 			    fstat(src_fd, &source_after) ||
-			    donor_changed(rc.source_index, source_ce, &source_after) ||
+			    donor_changed(source->index, source_ce, &source_after) ||
 			    !same_file_stat(&source_before, &source_after) ||
 			    lstat(donor.buf, &source_named) ||
 			    !same_file_stat(&source_before, &source_named) ||
@@ -1291,6 +1400,8 @@ int reflink_reshare_worktree(struct repository *r,
 		ret = same_fd_bytes(clone_fd, fd, before.st_size);
 		if (ret != 1) {
 			result.reason = ret ? "read-error" : "representation-differs";
+			if (!ret)
+				goto next_donor;
 			goto record;
 		}
 		if (preserve_reshare_metadata(fd, clone_fd, &before)) {
@@ -1301,7 +1412,7 @@ int reflink_reshare_worktree(struct repository *r,
 		if (fstat(fd, &after) || !same_file_stat(&before, &after) ||
 		    lstat(path.buf, &named) || !same_file_stat(&before, &named) ||
 		    fstat(src_fd, &source_after) ||
-		    donor_changed(rc.source_index, source_ce, &source_after) ||
+		    donor_changed(source->index, source_ce, &source_after) ||
 		    !same_file_stat(&source_before, &source_after) ||
 		    lstat(donor.buf, &source_named) ||
 		    !same_file_stat(&source_before, &source_named)) {
@@ -1347,7 +1458,7 @@ int reflink_reshare_worktree(struct repository *r,
 		result.after_known = !get_file_data_usage(write_fd, &result.after);
 		if (ret == 1 && !result.deduplicated) {
 			result.reason = "representation-differs";
-			goto record;
+			goto next_donor;
 		}
 		if (ret < 0 && !result.deduplicated) {
 			result.error_code = dedupe_error;
@@ -1362,7 +1473,7 @@ int reflink_reshare_worktree(struct repository *r,
 		    !same_file_stat(&before, &after) ||
 		    named.st_dev != before.st_dev || named.st_ino != before.st_ino ||
 		    fstat(src_fd, &source_after) ||
-		    donor_changed(rc.source_index, source_ce, &source_after) ||
+		    donor_changed(source->index, source_ce, &source_after) ||
 		    !same_file_stat(&source_before, &source_after) ||
 		    lstat(donor.buf, &source_named) ||
 		    !same_file_stat(&source_before, &source_named)) {
@@ -1375,6 +1486,25 @@ int reflink_reshare_worktree(struct repository *r,
 		result.reason = result.after_known && !result.after.private_bytes ?
 			"fully-shared" : "partially-shared";
 		total.reshared++;
+		goto record;
+next_donor:
+		close(src_fd);
+		if (write_fd >= 0) {
+			close(write_fd);
+			write_fd = -1;
+		}
+#ifdef __APPLE__
+		if (clone_fd >= 0) {
+			close(clone_fd);
+			clone_fd = -1;
+		}
+		delete_tempfile(&clone_temp);
+		if (tempdir.len)
+			rmdir(tempdir.buf);
+		strbuf_reset(&clone_path);
+		strbuf_reset(&tempdir);
+#endif
+		goto find_donor;
 record:
 #ifdef __APPLE__
 		if (clone_fd >= 0)

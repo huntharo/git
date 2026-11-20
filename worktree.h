@@ -38,6 +38,10 @@ struct worktree **get_worktrees(struct repository *repo);
  */
 struct worktree **get_worktrees_without_reading_head(struct repository *repo);
 
+/* Read the main worktree alone, without enumerating any linked worktrees. */
+struct worktree *get_main_worktree(struct repository *repo,
+				   int skip_reading_head);
+
 /*
  * Construct a struct worktree corresponding to repo->gitdir and
  * repo->worktree.
