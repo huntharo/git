@@ -408,6 +408,7 @@ linux-feature-testbed)
 	export GIT_TEST_MULTI_PACK_INDEX_WRITE_INCREMENTAL=1
 	export GIT_TEST_NO_WRITE_REV_INDEX=1
 	export GIT_TEST_CHECKOUT_WORKERS=2
+	export GIT_TEST_REFLINK_CHECKOUT=1
 	export GIT_TEST_PACK_USE_BITMAP_BOUNDARY_TRAVERSAL=1
 	;;
 linux-meson)
@@ -430,6 +431,10 @@ linux-asan-ubsan)
 	;;
 osx-meson)
 	MESONFLAGS="$MESONFLAGS -Dcredential_helpers=osxkeychain"
+	;;
+osx-reftable)
+	# macOS runners use APFS, so this clones for real
+	export GIT_TEST_REFLINK_CHECKOUT=1
 	;;
 esac
 

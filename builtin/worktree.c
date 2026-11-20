@@ -5,6 +5,7 @@
 #include "abspath.h"
 #include "advice.h"
 #include "checkout.h"
+#include "reflink-checkout.h"
 #include "config.h"
 #include "copy.h"
 #include "dir.h"
@@ -30,6 +31,7 @@
 
 #define BUILTIN_WORKTREE_ADD_USAGE \
 	N_("git worktree add [-f] [--detach] [--checkout] [--lock [--reason <string>]]\n" \
+	   "                 [--[no-]reflink] [--reflink-source=<worktree>]\n" \
 	   "                 [--orphan] [(-b | -B) <new-branch>] <path> [<commit-ish>]")
 
 #define BUILTIN_WORKTREE_LIST_USAGE \
@@ -123,6 +125,8 @@ struct add_opts {
 	int checkout;
 	int orphan;
 	int relative_paths;
+	int reflink;
+	const char *reflink_source_spec;
 	const char *keep_locked;
 };
 
@@ -399,6 +403,11 @@ static int checkout_worktree(const struct add_opts *opts,
 {
 	struct child_process cp = CHILD_PROCESS_INIT;
 	cp.git_cmd = 1;
+	/* the command line wins over inherited configuration */
+	if (opts->reflink >= 0)
+		strvec_pushl(&cp.args, "-c", opts->reflink ?
+			     "checkout.reflink=true" : "checkout.reflink=false",
+			     NULL);
 	strvec_pushl(&cp.args, "reset", "--hard", "--no-recurse-submodules", NULL);
 	if (opts->quiet)
 		strvec_push(&cp.args, "--quiet");
@@ -580,6 +589,16 @@ static int add_worktree(const char *path, const char *refname,
 	 */
 	if (the_repository->repository_format_worktree_config)
 		copy_filtered_worktree_config(sb_repo.buf);
+
+	/*
+	 * Remember that this worktree clones from its reflink source, so
+	 * that later checkouts in it keep sharing data blocks.
+	 */
+	if (opts->reflink > 0) {
+		strbuf_reset(&sb);
+		strbuf_addf(&sb, "%s/" REFLINK_SOURCE_FILE, sb_repo.buf);
+		write_file(sb.buf, "%s", opts->reflink_source_spec);
+	}
 
 	strvec_pushf(&child_env, "%s=%s", GIT_DIR_ENVIRONMENT, sb_git.buf);
 	strvec_pushf(&child_env, "%s=%s", GIT_WORK_TREE_ENVIRONMENT, path);
@@ -830,6 +849,8 @@ static int add(int ac, const char **av, const char *prefix,
 	const char *new_branch = NULL;
 	char *opt_track = NULL;
 	const char *lock_reason = NULL;
+	const char *reflink_source = NULL;
+	struct strbuf source_spec = STRBUF_INIT;
 	int keep_locked = 0;
 	int used_new_branch_options;
 	struct option options[] = {
@@ -843,6 +864,10 @@ static int add(int ac, const char **av, const char *prefix,
 		OPT_BOOL(0, "orphan", &opts.orphan, N_("create unborn branch")),
 		OPT_BOOL('d', "detach", &opts.detach, N_("detach HEAD at named commit")),
 		OPT_BOOL(0, "checkout", &opts.checkout, N_("populate the new working tree")),
+		OPT_BOOL(0, "reflink", &opts.reflink,
+			 N_("share unchanged files with the clone source (copy-on-write)")),
+		OPT_STRING(0, "reflink-source", &reflink_source, N_("worktree"),
+			   N_("worktree to clone files from (implies --reflink)")),
 		OPT_BOOL(0, "lock", &keep_locked, N_("keep the new working tree locked")),
 		OPT_STRING(0, "reason", &lock_reason, N_("string"),
 			   N_("reason for locking")),
@@ -860,8 +885,52 @@ static int add(int ac, const char **av, const char *prefix,
 
 	memset(&opts, 0, sizeof(opts));
 	opts.checkout = 1;
+	opts.reflink = -1;
 	opts.relative_paths = use_relative_paths;
 	ac = parse_options(ac, av, prefix, options, git_worktree_add_usage, 0);
+	if (reflink_source) {
+		if (!opts.reflink)
+			die(_("options '%s' and '%s' cannot be used together"),
+			    "--reflink-source", "--no-reflink");
+		opts.reflink = 1;
+		if (reflink_source_spec(the_repository, prefix, reflink_source,
+					&source_spec))
+			die(_("'%s' is not a worktree with a working tree"),
+			    reflink_source);
+	} else if (opts.reflink > 0) {
+		/*
+		 * The default reflink source is the main worktree. In a
+		 * bare repository with linked worktrees there is none, so
+		 * clone from the worktree we are run from, if any.
+		 */
+		struct worktree **wts = get_worktrees_without_reading_head(the_repository);
+		const char *configured;
+
+		if (wts[0]->is_bare &&
+		    repo_config_get_string_tmp(the_repository,
+					       "checkout.reflinksource",
+					       &configured) &&
+		    reflink_source_spec(the_repository, NULL, NULL,
+					&source_spec))
+			warning(_("no reflink source: the main worktree is bare; "
+				  "use --reflink-source=<worktree>"));
+		free_worktrees(wts);
+	}
+	opts.reflink_source_spec = source_spec.buf;
+	if (opts.reflink > 0) {
+		const char *value;
+
+		/*
+		 * Not repo_config_get_bool(): a value that is not a boolean
+		 * must not stop us, it only disables later cloning (with a
+		 * warning when that happens).
+		 */
+		if (!repo_config_get_string_tmp(the_repository, "checkout.reflink",
+						&value) &&
+		    !git_parse_maybe_bool(value))
+			warning(_("checkout.reflink is false; later checkouts in "
+				  "the new worktree will not clone files"));
+	}
 	if (!!opts.detach + !!new_branch + !!new_branch_force > 1)
 		die(_("options '%s', '%s', and '%s' cannot be used together"), "-b", "-B", "--detach");
 	if (opts.detach && opts.orphan)
@@ -1002,6 +1071,7 @@ static int add(int ac, const char **av, const char *prefix,
 cleanup:
 	free(path);
 	free(opt_track);
+	strbuf_release(&source_spec);
 	free(branch_to_free);
 	free(new_branch_to_free);
 	return ret;
