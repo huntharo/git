@@ -155,6 +155,10 @@ package inputs, version inventory, and checksums. glibc 2.35, `/bin/sh`,
 and SSH remain host requirements. Linux tests cover
 relocation, the baseline ABI, ordinary fallback, HTTPS with the bundled CA
 file and Dugite environment, and actual XFS/btrfs sharing.
+The runner verifies the locked CA bundle checksum before mounting it
+read-only for APT's HTTPS bootstrap. Both containers select the snapshot
+before their first APT update or install. Ubuntu's archive keyring still
+authenticates the snapshot metadata.
 Windows is intentionally excluded from this release at the user's request.
 
 macOS package smoke checks and source suites t2410--t2415 and t2419 run on the runner's
@@ -221,7 +225,10 @@ installation and compares its input with an independently emitted job digest.
 All `strip` and `lipo` operations finish before Developer ID signing. Every
 nested Mach-O is signed with hardened runtime and verified against Team ID
 `T44CNHC4UH`. A ZIP of that final tree is submitted to Apple; an Accepted
-receipt is required. Individual CLI files and tarballs cannot be stapled.
+receipt is required. A separate step runs payload probes only after the
+signing step has removed its temporary keychain and credential files. That
+step does not receive signing or notarization credentials.
+Individual CLI files and tarballs cannot be stapled.
 The receipt identifies Apple's notarization ticket; each enclosing app still
 needs its own signing, notarization and staple.
 
@@ -237,7 +244,13 @@ manifest pins the release URL, archive SHA256, source SHA, inventory SHA256
 and signing state. Downloads are verified before extraction, cached by
 digest, and staged atomically. A valid cached archive works offline. A failed
 download, checksum, signature or inventory check is fatal; it cannot select
-system Git or an upstream Dugite archive. Release assets are immutable:
+system Git or an upstream Dugite archive. Replacing a nonempty stage needs
+Python 3 and a filesystem that supports native directory exchange on macOS
+or Linux. The stage path stays available during the exchange. Jobs packaging
+different runtime pins should use separate stage paths so each job sees a
+consistent tree across multiple reads.
+
+Release assets are immutable:
 publish a new identified build instead of replacing an approved archive.
 If publication stops after upload, retry the failed publish job. It reuses
 an existing draft only if its complete asset set and digests match the
@@ -256,3 +269,11 @@ recipient output, including when donor index stat checks look clean. The
 existing re-sharing operation still follows the APFS replacement constraints
 documented above. Archive and inventory hashing verify the shipped runtime
 independently of the source's checkout checks.
+
+Apps use standard Git commands for normal worktree operations. If a client
+offers `--verify-filters` in explicit Clones maintenance, it must first find
+that option in `git worktree reflink -h` for the selected executable and
+invalidate the probe on a runtime switch. Command support alone is insufficient
+because older PwrGit runtimes also expose `worktree reflink`.
+Dry-run stays filter-free and reports estimates. Paths that require a filter
+check remain unverified.

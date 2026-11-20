@@ -37,26 +37,41 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Prepare checksum-pinned Linux inputs
+        id: linux-inputs
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=contrib/pwrgit-runtime python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          from pathlib import Path
+          from runtime import download
+          lock = json.loads(Path('contrib/pwrgit-runtime/build-lock.json').read_text())
+          ca = lock['ca_bundle']
+          pem = download(ca['url'], ca['sha256'], Path(os.environ['RUNNER_TEMP']) / 'apt-bootstrap.pem')
+          pem.chmod(0o644)
+          print('image=' + lock['linux_image'])
+          print('snapshot=' + lock['ubuntu_snapshot'])
+          PY
       - name: Build and verify against the pinned glibc baseline
         env:
           TARGET_ARCH: ${{ matrix.arch }}
+          LINUX_IMAGE: ${{ steps.linux-inputs.outputs.image }}
+          APT_SNAPSHOT: ${{ steps.linux-inputs.outputs.snapshot }}
         run: |
           set -euo pipefail
-          image="$(python3 -c 'import json; print(json.load(open("contrib/pwrgit-runtime/build-lock.json"))["linux_image"])')"
-          snapshot="$(python3 -c 'import json; print(json.load(open("contrib/pwrgit-runtime/build-lock.json"))["ubuntu_snapshot"])')"
           mkdir "$RUNNER_TEMP/output"
-          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/output:/out" "$image" bash -c '
-            set -euo pipefail
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates
-            bash /src/contrib/pwrgit-runtime/build-linux-container.sh "$1" "$2"
-          ' bash "$TARGET_ARCH" "$snapshot"
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/output:/out" \
+            -v "$RUNNER_TEMP/apt-bootstrap.pem:/run/pwrgit-apt-ca.pem:ro" "$LINUX_IMAGE" \
+            bash /src/contrib/pwrgit-runtime/build-linux-container.sh "$TARGET_ARCH" "$APT_SNAPSHOT"
       - name: Real btrfs and XFS reflink checks
+        env:
+          LINUX_IMAGE: ${{ steps.linux-inputs.outputs.image }}
+          APT_SNAPSHOT: ${{ steps.linux-inputs.outputs.snapshot }}
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y btrfs-progs xfsprogs
-          image="$(python3 -c 'import json; print(json.load(open("contrib/pwrgit-runtime/build-lock.json"))["linux_image"])')"
           for filesystem in btrfs xfs; do
             truncate -s 2G "$RUNNER_TEMP/$filesystem.img"
             if [ "$filesystem" = xfs ]; then
@@ -70,10 +85,11 @@ jobs:
             fi
             mkdir "$RUNNER_TEMP/$filesystem"
             sudo mount -o "$mount_options" "$RUNNER_TEMP/$filesystem.img" "$RUNNER_TEMP/$filesystem"
-            docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/output:/out" -v "$RUNNER_TEMP/$filesystem:/tests" "$image" bash -c '
+            docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/output:/out" -v "$RUNNER_TEMP/$filesystem:/tests" \
+              -v "$RUNNER_TEMP/apt-bootstrap.pem:/run/pwrgit-apt-ca.pem:ro" "$LINUX_IMAGE" bash -c '
               set -euo pipefail
-              apt-get update
-              apt-get install -y --no-install-recommends python3 ca-certificates
+              bash /src/contrib/pwrgit-runtime/setup-linux-apt.sh "$2"
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 ca-certificates
               python3 /src/contrib/pwrgit-runtime/smoke.py "/out/relocated runtime" --test-tool /out/build/source/t/helper/test-tool --root /tests --require-sharing --report "/out/sharing-$1.json"
               cd /out/build/source/t
               for suite in t241[0-7]-*.sh; do ./$suite --root=/tests; done
@@ -82,7 +98,7 @@ jobs:
                   cat test-results/t2419-reflink-lfs.out
                   exit 1
                 }
-            ' bash "$filesystem"
+            ' bash "$filesystem" "$APT_SNAPSHOT"
             sudo umount "$RUNNER_TEMP/$filesystem"
           done
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -252,6 +268,8 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: bash stage/recipes/sign-macos.sh stage/runtime
+      - name: Verify signed runtime after signing credential cleanup
+        run: python3 stage/recipes/verify.py stage/runtime --require-signed
       - name: Archive sealed signed payload
         id: signed
         run: |

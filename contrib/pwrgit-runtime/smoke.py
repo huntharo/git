@@ -45,6 +45,11 @@ def g(cwd, *args, **kw):
     return cmd([git, *args], cwd, **kw)
 
 
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
 results = []
 with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as tmp:
     root = Path(tmp)
@@ -80,21 +85,21 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
         wt = base / 'wt'
         trace = base / 'trace.json'
         g(src, 'worktree', 'add', '-q', '--detach', wt, extra={'GIT_TRACE2_EVENT': str(trace)})
-        assert (wt / 'payload').read_bytes() == data
-        assert (wt / 'local.lfs').read_bytes() == lfs_data
-        assert (wt / 'converted.txt').read_bytes() == b'first\r\nsecond\r\n'
-        assert (wt / 'external.txt').read_bytes() == b'expanded\n'
-        assert g(wt, 'show', 'HEAD:local.lfs').startswith(b'version https://git-lfs.github.com/spec/v1\n')
-        assert not g(wt, 'status', '--porcelain')
+        require((wt / 'payload').read_bytes() == data, 'Checkout changed payload bytes')
+        require((wt / 'local.lfs').read_bytes() == lfs_data, 'Checkout did not hydrate the LFS payload')
+        require((wt / 'converted.txt').read_bytes() == b'first\r\nsecond\r\n', 'Checkout did not convert CRLF')
+        require((wt / 'external.txt').read_bytes() == b'expanded\n', 'Checkout did not apply the external filter')
+        require(g(wt, 'show', 'HEAD:local.lfs').startswith(b'version https://git-lfs.github.com/spec/v1\n'),
+                'Committed LFS file is missing its pointer')
+        require(not g(wt, 'status', '--porcelain'), 'New worktree is dirty')
         sharing = subprocess.run([str(helper), 'reflink', 'shared', str(src / 'payload'), str(wt / 'payload')],
                                  env=env, capture_output=True).returncode == 0
-        if a.require_sharing:
-            assert sharing, 'Expected actual filesystem block sharing'
+        require(sharing or not a.require_sharing, 'Expected actual filesystem block sharing')
         inode = (wt / 'payload').stat().st_ino
         for args in [('status', '--porcelain'), ('reset', '-q', '--hard'), ('checkout', '--', '.'),
                      ('restore', '.'), ('checkout-index', '-af')]:
             g(wt, '-c', 'checkout.reflink=false', *args)
-        assert (wt / 'payload').stat().st_ino == inode
+        require((wt / 'payload').stat().st_ino == inode, 'Disabled checkout replaced the payload')
         if sharing:
             cmd([helper, 'reflink', 'shared', src / 'payload', wt / 'payload'], base)
         if has_reshare:
@@ -106,37 +111,38 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
                 g(wt, 'update-index', '--refresh', '--force-write-index')
                 before = (wt / 'payload').stat().st_ino
                 g(wt, 'worktree', 'reflink', '--dry-run', '--porcelain')
-                assert (wt / 'payload').stat().st_ino == before
-                assert (wt / 'payload').read_bytes() == data
+                require((wt / 'payload').stat().st_ino == before, 'Dry-run replaced the payload')
+                require((wt / 'payload').read_bytes() == data, 'Dry-run changed payload bytes')
                 if repair == 'command':
                     g(wt, 'worktree', 'reflink', '--porcelain')
                 else:
                     g(wt, '-c', 'checkout.reflink=true', 'reset', '-q', '--hard')
-                assert (wt / 'payload').read_bytes() == data
-                assert (wt / 'local.lfs').read_bytes() == lfs_data
+                require((wt / 'payload').read_bytes() == data, f'{repair} changed payload bytes')
+                require((wt / 'local.lfs').read_bytes() == lfs_data, f'{repair} changed LFS bytes')
                 if sharing:
                     cmd([helper, 'reflink', 'shared', src / 'payload', wt / 'payload'], base)
                 repaired_inode = (wt / 'payload').stat().st_ino
                 g(wt, 'worktree', 'reflink')
-                assert (wt / 'payload').stat().st_ino == repaired_inode
-            assert not g(wt, 'status', '--porcelain')
+                require((wt / 'payload').stat().st_ino == repaired_inode,
+                        'Re-share replaced an already shared payload')
+            require(not g(wt, 'status', '--porcelain'), 'Worktree is dirty after re-share')
         (src / 'payload').write_bytes(b'D' + data[1:])
         dirty = base / 'dirty'
         g(src, 'worktree', 'add', '-q', '--detach', dirty)
-        assert (dirty / 'payload').read_bytes() == data
-        assert (src / 'payload').read_bytes() == b'D' + data[1:]
+        require((dirty / 'payload').read_bytes() == data, 'Checkout copied modified donor bytes')
+        require((src / 'payload').read_bytes() == b'D' + data[1:], 'Checkout modified donor bytes')
         (wt / 'payload').write_bytes(b'W' + data[1:])
-        assert (dirty / 'payload').read_bytes() == data
+        require((dirty / 'payload').read_bytes() == data, 'A write in another worktree changed the payload')
         # A disabled clone exercises ordinary fallback, even on a reflink FS.
         fallback = base / 'fallback'
         g(src, '-c', 'checkout.reflink=false', 'worktree', 'add', '-q', '--detach', fallback)
-        assert (fallback / 'payload').read_bytes() == data
+        require((fallback / 'payload').read_bytes() == data, 'Ordinary checkout produced different payload bytes')
         sparse = base / 'sparse'
         g(src, 'clone', '-q', '--no-checkout', src, sparse)
         g(sparse, 'sparse-checkout', 'set', 'dir')
         g(sparse, '-c', 'filter.lfs.smudge=git-lfs smudge --skip',
           '-c', 'filter.lfs.process=git-lfs filter-process --skip', 'checkout', '-q', 'HEAD')
-        assert (sparse / 'dir/selected').read_bytes() == b'sparse selection\n'
+        require((sparse / 'dir/selected').read_bytes() == b'sparse selection\n', 'Sparse checkout lost selected bytes')
         sub = base / 'sub'
         g(base, 'init', '-q', sub)
         (sub / 'nested').write_bytes(b'submodule bytes\n')
@@ -144,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
         g(sub, '-c', 'user.name=Smoke', '-c', 'user.email=smoke@example.invalid',
           '-c', 'commit.gpgsign=false', 'commit', '-qm', 'submodule')
         g(src, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub, 'nested-repo')
-        assert (src / 'nested-repo/nested').read_bytes() == b'submodule bytes\n'
+        require((src / 'nested-repo/nested').read_bytes() == b'submodule bytes\n', 'Submodule checkout changed bytes')
         events = [json.loads(line) for line in trace.read_text().splitlines()]
         counts = {e['name']: e['count'] for e in events if e.get('event') == 'counter' and e.get('category') == 'reflink'}
         results.append(dict(workers=workers, real_block_sharing=sharing, trace_counters=counts,
@@ -154,7 +160,8 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
                             existing_worktree_reshare=has_reshare, hard_reset_reshare=has_reshare,
                             payload_sha256=hashlib.sha256(data).hexdigest()))
     if a.https:
-        assert g(root, '-c', 'credential.helper=', 'ls-remote', 'https://github.com/huntharo/git.git', 'HEAD')
+        require(g(root, '-c', 'credential.helper=', 'ls-remote', 'https://github.com/huntharo/git.git', 'HEAD'),
+                'HTTPS probe returned no HEAD')
     write_json(a.report, dict(version=g(root, '--version').decode().strip(), https=a.https,
                              ca_bundle=ca_bundle, cases=results))
 print(json.dumps({'report': str(a.report), 'workers': [1, 8], 'https': a.https, 'passed': True}))

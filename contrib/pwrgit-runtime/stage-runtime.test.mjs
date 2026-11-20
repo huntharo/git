@@ -117,4 +117,49 @@ esac
   }
   assert.equal(statSync(join(output, "pwrgit-build.json")).mode & 0o777, 0o644);
   assert.equal(statSync(join(output, "bin/git")).mode & 0o777, 0o755);
+
+  await t.test("keeps an existing stage when replacement verification fails", async () => {
+    const original = JSON.parse(readFileSync(manifestPath));
+    const originalPin = readRuntimeManifest(manifestPath, "linux", "x64");
+    const invalid = structuredClone(original);
+    invalid.assets["linux-x64"].inventory_sha256 = "a".repeat(64);
+    const inode = statSync(output).ino;
+    writeFileSync(manifestPath, JSON.stringify(invalid));
+    try {
+      await assert.rejects(stageRuntime({ manifestPath, platform: "linux", arch: "x64", output, cache }),
+        /inventory checksum/);
+      assert.equal(statSync(output).ino, inode);
+      assert.equal(verifyRuntimeRaw(output, originalPin).version, version);
+    } finally {
+      writeFileSync(manifestPath, JSON.stringify(original));
+    }
+  });
+
+  await t.test("atomically replaces a nonempty stage with a verified directory",
+    { skip: !["darwin", "linux"].includes(process.platform) }, async () => {
+      const inode = statSync(output).ino;
+      writeFileSync(join(output, "stale"), "stale");
+
+      // Simulate a filesystem without exchange support at the publish boundary.
+      const shim = join(temp, "no-exchange");
+      mkdirSync(shim);
+      writeFileSync(join(shim, "python3"), `#!/bin/sh
+test -x "$5/bin/git" || exit 1
+echo "directory exchange unavailable" >&2
+exit 1
+`, { mode: 0o755 });
+      const originalPath = process.env.PATH;
+      process.env.PATH = shim + ":" + originalPath;
+      try {
+        await assert.rejects(stageRuntime({ manifestPath, platform: "linux", arch: "x64", output, cache }),
+          /directory exchange unavailable/);
+      } finally {
+        process.env.PATH = originalPath;
+      }
+      assert.equal(statSync(output).ino, inode);
+
+      const pin = await stageRuntime({ manifestPath, platform: "linux", arch: "x64", output, cache });
+      assert.notEqual(statSync(output).ino, inode);
+      assert.equal(verifyRuntimeRaw(output, pin).version, version);
+    });
 });
