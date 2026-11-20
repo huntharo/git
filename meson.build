@@ -290,6 +290,7 @@ compat_sources = [
   'compat/nonblock.c',
   'compat/obstack.c',
   'compat/open.c',
+  'compat/reflink.c',
   'compat/terminal.c',
 ]
 
@@ -480,6 +481,7 @@ libgit_sources = [
   'rebase-interactive.c',
   'rebase.c',
   'ref-filter.c',
+  'reflink-checkout.c',
   'reflog-walk.c',
   'reflog.c',
   'refs.c',
@@ -1507,6 +1509,15 @@ foreach func, impls : checkfuncs
     endforeach
   endif
 endforeach
+
+# Reflinks are optional. Missing native declarations use the portable stubs.
+reflink_supported = host_machine.system() in ['linux', 'darwin']
+if host_machine.system() == 'darwin'
+  reflink_supported = compiler.links(files('compat/darwin/reflink-availability.c')[0], name: 'APFS clone metadata APIs')
+endif
+if not reflink_supported
+  libgit_c_args += '-DNO_REFLINK'
+endif
 
 if compiler.has_function('sync_file_range')
   libgit_c_args += '-DHAVE_SYNC_FILE_RANGE'

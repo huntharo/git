@@ -8,6 +8,7 @@
 #include "hash.h"
 #include "hex.h"
 #include "parallel-checkout.h"
+#include "reflink-checkout.h"
 #include "pkt-line.h"
 #include "progress.h"
 #include "read-cache-ll.h"
@@ -358,6 +359,10 @@ void write_pc_item(struct parallel_checkout_item *pc_item,
 		goto out;
 	}
 
+	if (!reflink_checkout_entry(pc_item->ce, &pc_item->ca, state, path.buf,
+				    &pc_item->st, &fstat_done))
+		goto written;
+
 	fd = open(path.buf, O_WRONLY | O_CREAT | O_EXCL, mode);
 
 	if (fd < 0) {
@@ -395,6 +400,7 @@ void write_pc_item(struct parallel_checkout_item *pc_item,
 		goto out;
 	}
 
+written:
 	if (state->refresh_cache && !fstat_done && lstat(path.buf, &pc_item->st) < 0) {
 		error_errno("unable to stat just-written file '%s'",  path.buf);
 		pc_item->status = PC_ITEM_FAILED;

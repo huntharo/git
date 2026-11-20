@@ -368,6 +368,21 @@ excluded as so much relies on it, but this might change in the future.
 GIT_TEST_SPLIT_INDEX=<boolean> forces split-index mode on the whole
 test suite. Accept any boolean values that are accepted by git-config.
 
+GIT_TEST_REFLINK_CHECKOUT=<boolean> forces reflink checkout on (or,
+when false, off) for the whole test suite. When on, every file that
+checkout could clone is cloned, from a scratch copy of the blob if the
+clone source does not have it, so that cloning and its metadata fix-ups
+are exercised everywhere. The legacy value "corrupt" makes those scratch
+copies wrong and forces their rejection, exercising the discard-and-write
+fallback (there is no longer a clone-content verifier). Either way the test
+suite must pass unchanged. Cloning only happens on filesystems that
+support it (APFS, btrfs, XFS, bcachefs, overlayfs); elsewhere this
+tests the fallback.
+
+GIT_TEST_REFLINK_TAMPER=<path> modifies the clone source's copy of
+<path> after it was chosen as a donor and before it is cloned, to
+simulate a concurrent edit. Used by t2410.
+
 GIT_TEST_PROTOCOL_VERSION=<n>, when set, makes 'protocol.version'
 default to n.
 
