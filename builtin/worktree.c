@@ -38,7 +38,7 @@
 #define BUILTIN_WORKTREE_LIST_USAGE \
 	N_("git worktree list [-v | --porcelain [-z]]")
 #define BUILTIN_WORKTREE_REFLINK_USAGE \
-	N_("git worktree reflink [-n] [-v | --porcelain [-z]]\n" \
+	N_("git worktree reflink [-n | --verify-filters] [-v | --porcelain [-z]]\n" \
 	   "                 [--reflink-source=<worktree>] [<worktree>]")
 #define BUILTIN_WORKTREE_LOCK_USAGE \
 	N_("git worktree lock [--reason <string>] <worktree>")
@@ -1608,6 +1608,8 @@ static int reflink(int ac, const char **av, const char *prefix,
 	struct worktree **wts, *target = NULL, *donor = NULL;
 	struct option options[] = {
 		OPT_BOOL('n', "dry-run", &opts.dry_run, N_("report estimates without sharing data")),
+		OPT_BOOL(0, "verify-filters", &opts.verify_filters,
+			 N_("run clean filters to verify stat-ambiguous matching files")),
 		OPT_BOOL(0, "porcelain", &opts.porcelain, N_("machine-readable output")),
 		OPT_BOOL('z', NULL, &opts.nul_termination, N_("terminate fields with NUL")),
 		OPT__VERBOSE(&opts.verbose, N_("report each path and reason")),
@@ -1618,6 +1620,8 @@ static int reflink(int ac, const char **av, const char *prefix,
 	int ret;
 
 	ac = parse_options(ac, av, prefix, options, git_worktree_reflink_usage, 0);
+	if (opts.dry_run && opts.verify_filters)
+		die(_("cannot combine --dry-run and --verify-filters"));
 	if (ac > 1 || (opts.nul_termination && !opts.porcelain) ||
 	    (opts.verbose && opts.porcelain))
 		usage_with_options(git_worktree_reflink_usage, options);
@@ -1653,6 +1657,8 @@ static int reflink(int ac, const char **av, const char *prefix,
 			strvec_pushf(&cmd.args, "--reflink-source=%s", opts.source);
 		if (opts.dry_run)
 			strvec_push(&cmd.args, "--dry-run");
+		if (opts.verify_filters)
+			strvec_push(&cmd.args, "--verify-filters");
 		if (opts.porcelain)
 			strvec_push(&cmd.args, "--porcelain");
 		if (opts.nul_termination)

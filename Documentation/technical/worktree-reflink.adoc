@@ -49,7 +49,8 @@ the target's actual physical representation; it does not reconvert it.
 APFS takes the index lock and reloads the current index before scanning so
 a hard reset's follow-up repair cannot overwrite a concurrent completed add.
 Stat-clean LFS paths can share if their current bytes match a donor, whether
-those bytes are hydrated data or pointers. Re-sharing does not run LFS.
+those bytes are hydrated data or pointers. Default and automatic re-sharing
+do not run LFS.
 
 The scan skips absent/nonregular/sparse/unmerged/intent-to-add entries and
 hardlinked targets. Allocation metadata identifies fully shared files before
@@ -61,6 +62,22 @@ invoke filters. Known size, type and mode changes resolve dirty eligibility
 directly. Stat/racy ambiguity uses normal `index_fd()` content verification;
 ambiguous external-filter or working-tree-encoding cases skip conservatively.
 No fabricated stat entries or separate verification cache are introduced.
+
+An index written in the same timestamp tick as a checkout can leave its
+otherwise matching entries racy. Advancing the index timestamp through a
+clean status check with optional locks enabled can resolve this without any
+change to the entry stat tuples. Manual `--verify-filters` instead checks
+ambiguous filtered targets directly. It first compares the opened target
+with the eligible donor, then uses the target's ordinary clean conversion
+and compares the resulting object ID with the index. This includes the
+driver's normal clean side effects and error behavior. The comparison
+before conversion does not replace the backend's final byte verification.
+Working-tree encoding remains outside this option. Dry-run and sampled
+automatic repair never use the option.
+APFS keeps the original on-disk index when a repair leaves unresolved racy
+entries. Publishing a new index timestamp would otherwise trigger the index
+writer's content checks on those entries, including paths the repair skipped.
+In that case a later Git command can refresh the replacement stat data.
 
 Source selection reuses the marker/config/main-worktree order and existing
 source index OID/stat/racy checks. The in-place/replacement operation needs

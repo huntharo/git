@@ -63,6 +63,7 @@ int reflink_source_spec(struct repository *r, const char *prefix,
 struct reflink_reshare_options {
 	const char *source;
 	int dry_run;
+	int verify_filters;
 	int porcelain;
 	int nul_termination;
 	int verbose;

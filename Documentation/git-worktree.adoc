@@ -13,7 +13,7 @@ git worktree add [-f] [--detach] [--checkout] [--lock [--reason <string>]]
 		 [--[no-]reflink] [--reflink-source=<worktree>]
 		 [--orphan] [(-b | -B) <new-branch>] <path> [<commit-ish>]
 git worktree list [-v | --porcelain [-z]]
-git worktree reflink [-n] [-v | --porcelain [-z]]
+git worktree reflink [-n | --verify-filters] [-v | --porcelain [-z]]
 		 [--reflink-source=<worktree>] [<worktree>]
 git worktree lock [--reason <string>] <worktree>
 git worktree move <worktree> <new-path>
@@ -184,6 +184,16 @@ reasons, allocation and work counts; see <<REFLINK-PORCELAIN>>. Unsupported
 filesystems and unavailable donors produce skips. The exit status is zero
 when all paths were re-shared or skipped, and nonzero for operational failures.
 The command does not recurse into submodules or enable future reflink checkout.
++
+By default, paths with a filter driver and ambiguous index stat data are
+skipped. To include these paths, run `git worktree reflink --verify-filters`.
+Only private candidates with matching donor bytes are passed through the
+target worktree's normal clean conversion and checked against its indexed
+object. A clean filter can run programs and update its cache (including
+the Git LFS cache), as it can during a content check by `git status`.
+Required filter failures can stop the operation after earlier paths have
+already been re-shared. Git does not request smudge conversion.
+`--verify-filters` is incompatible with `--dry-run`.
 
 `remove`::
 

@@ -418,4 +418,117 @@ test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'enabled same-HEAD 
 	test_must_be_empty status
 '
 
+# Move only the index timestamp behind an otherwise stat-matching entry.
+# This models an index published in the same timestamp tick as the checkout
+# without a wall-clock sleep or changing the cached stat tuple.
+make_lfs_index_racy () {
+	index=$(git -C "$1" rev-parse --path-format=absolute --git-path index) &&
+	git -C "$1" ls-files --debug >before-index &&
+	test-tool chmtime =-120 "$index" &&
+	git -C "$1" ls-files --debug >after-index &&
+	test_cmp before-index after-index
+}
+
+for representation in hydrated pointer
+do
+	test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE "re-share verifies racy $representation LFS bytes on request" '
+		test_when_finished "rm -f verify.packet; git -C source worktree remove -f ../racy-target; git -C source worktree remove -f ../racy-donor" &&
+		git -C source show "HEAD:$asset" >racy-pointer &&
+		for wt in racy-target racy-donor
+		do
+			if test "$representation" = pointer
+			then
+				GIT_LFS_SKIP_SMUDGE=1 git -C source worktree add -q --detach --no-reflink "../$wt"
+			else
+				git -C source worktree add -q --detach --no-reflink "../$wt"
+			fi &&
+			test-tool chmtime =-60 "$wt/$asset" &&
+			git -C "$wt" update-index --refresh || return 1
+		done &&
+		make_lfs_index_racy racy-target &&
+		GIT_OPTIONAL_LOCKS=0 git -C racy-target status --porcelain >status &&
+		test_must_be_empty status &&
+		git -C racy-target worktree reflink -n --porcelain --reflink-source=../racy-donor >report &&
+		test_grep "^reason conversion-unsupported$" report &&
+		test_not_shared "racy-target/$asset" "racy-donor/$asset" &&
+		test_must_fail git -C racy-target worktree reflink -n --verify-filters &&
+		GIT_TRACE_PACKET="$TRASH_DIRECTORY/verify.packet" git -C source worktree reflink \
+			--verify-filters --porcelain --reflink-source=../racy-donor ../racy-target >report &&
+		test_grep "command=clean" verify.packet &&
+		test_grep ! "command=smudge" verify.packet &&
+		rm verify.packet &&
+		GIT_TRACE_PACKET="$TRASH_DIRECTORY/verify.packet" git -C racy-target worktree reflink \
+			--verify-filters --reflink-source=../racy-donor --porcelain >repeat &&
+		test_path_is_missing verify.packet &&
+		test_shared "racy-target/$asset" "racy-donor/$asset" &&
+		if test "$representation" = pointer
+		then
+			test_cmp racy-pointer "racy-target/$asset"
+		else
+			test_cmp lifecycle-payload "racy-target/$asset"
+		fi &&
+		git -C racy-target status --porcelain >status &&
+		test_must_be_empty status
+	'
+done
+
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'filter verification skips dirty or staged mismatches before invoking LFS' '
+	test_when_finished "git -C source worktree remove -f ../mismatch" &&
+	git -C source worktree add -q --detach --no-reflink ../mismatch &&
+	test-tool genrandom dirty 196608 >dirty-payload &&
+	cp dirty-payload "mismatch/$asset" &&
+	test-tool chmtime =+5 "mismatch/$asset" &&
+	GIT_TRACE_PACKET="$TRASH_DIRECTORY/mismatch.packet" git -C mismatch worktree reflink \
+		--verify-filters --porcelain >report &&
+	test_grep "^reason representation-differs$" report &&
+	test_path_is_missing mismatch.packet &&
+	test_cmp dirty-payload "mismatch/$asset" &&
+	git -C mismatch add -- "$asset" &&
+	git -C mismatch ls-files -s >before-stage &&
+	cp lifecycle-payload "mismatch/$asset" &&
+	git -C mismatch worktree reflink --verify-filters --porcelain >report &&
+	test_grep "^reason no-donor$" report &&
+	git -C mismatch ls-files -s >after-stage &&
+	test_cmp before-stage after-stage &&
+	test_not_shared "source/$asset" "mismatch/$asset"
+'
+
+test_expect_success GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'equal filtered bytes require current clean output to match the index' '
+	test_when_finished "git -C extension worktree remove -f ../extension-verify" &&
+	git -C extension worktree add -q --detach --no-reflink ../extension-verify &&
+	reflink_stable_source extension-verify &&
+	make_lfs_index_racy extension-verify &&
+	# With the transform disabled, the same hydrated bytes produce a
+	# different pointer. Physical equality with the donor is insufficient.
+	GIT_TRACE_PACKET="$TRASH_DIRECTORY/extension.packet" \
+	git -C extension-verify -c lfs.extension.rot.clean=cat worktree reflink \
+		--verify-filters --porcelain >report &&
+	test_grep "^reason target-dirty$" report &&
+	test_shared extension/.gitattributes extension-verify/.gitattributes &&
+	grep "git> command=clean" extension.packet >clean-requests &&
+	test_line_count = 1 clean-requests &&
+	git -C extension-verify ls-files --debug >still-racy &&
+	if test_have_prereq MACOS
+	then
+		test_cmp before-index still-racy
+	fi &&
+	test_not_shared extension/file extension-verify/file &&
+	test_cmp expected extension-verify/file &&
+	git -C extension-verify worktree reflink --verify-filters --porcelain >report &&
+	test_shared extension/file extension-verify/file &&
+	test_cmp expected extension-verify/file
+'
+
+test_expect_success MACOS,GIT_LFS_FILE_TRANSPORT,SHA256SUM,RESHARE 'APFS filter verification waits for exclusive index access' '
+	test_when_finished "git -C source worktree remove -f ../verify-lock" &&
+	git -C source worktree add -q --detach --no-reflink ../verify-lock &&
+	make_lfs_index_racy verify-lock &&
+	>"$index.lock" &&
+	test_when_finished "rm -f \"$index.lock\"" &&
+	GIT_TRACE_PACKET="$TRASH_DIRECTORY/locked.packet" test_must_fail \
+		git -C verify-lock worktree reflink --verify-filters &&
+	test_path_is_missing locked.packet &&
+	test_not_shared "source/$asset" "verify-lock/$asset"
+'
+
 test_done

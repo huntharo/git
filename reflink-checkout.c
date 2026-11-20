@@ -1212,9 +1212,25 @@ int reflink_reshare_worktree(struct repository *r,
 		if (changed) {
 			/* Ordinary Git would content-check this stat/racy ambiguity. */
 			convert_attrs(r->index, &ca, ce->name);
-			if (ca.drv || ca.working_tree_encoding) {
+			if (ca.working_tree_encoding ||
+			    (ca.drv && !opts->verify_filters)) {
 				result.reason = "conversion-unsupported";
 				goto record;
+			}
+			if (ca.drv) {
+				/*
+				 * A clean filter can have side effects. Run it only
+				 * after finding equal physical data. This check
+				 * cannot certify the target's indexed content or
+				 * replace the backend's final byte comparison.
+				 */
+				total.userspace_compared++;
+				total.comparison_bytes += 2 * (uintmax_t)before.st_size;
+				ret = same_fd_bytes(src_fd, fd, before.st_size);
+				if (ret != 1) {
+					result.reason = ret ? "read-error" : "representation-differs";
+					goto record;
+				}
 			}
 			hash_fd = dup(fd);
 			if (hash_fd < 0) {
@@ -1408,6 +1424,26 @@ record:
 	}
 done:
 	rc.resharing = 0;
+	if (index_locked && r->index->cache_changed) {
+		/*
+		 * Publishing advances the index timestamp. The index writer
+		 * would content-check remaining racy entries, potentially
+		 * running filters on paths this scan deliberately skipped.
+		 * Keep the old index if that would be necessary; subsequent
+		 * Git commands can refresh the replacements' stat data.
+		 */
+		for (size_t i = 0; i < r->index->cache_nr; i++) {
+			const struct cache_entry *ce = r->index->cache[i];
+
+			if (!ce_uptodate(ce) && is_racy_timestamp(r->index, ce)) {
+				trace2_data_string("reflink-reshare", r, "index-update",
+						   "deferred-racy-entries");
+				rollback_lock_file(&index_lock);
+				index_locked = 0;
+				break;
+			}
+		}
+	}
 	if (index_locked && write_locked_index(r->index, &index_lock,
 					    COMMIT_LOCK | SKIP_IF_UNCHANGED)) {
 		error(_("could not record reflink replacement metadata in index"));
