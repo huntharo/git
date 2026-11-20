@@ -27,3 +27,5 @@ python3 contrib/pwrgit-runtime/smoke.py '/out/relocated runtime' \
   --test-tool /out/build/source/t/helper/test-tool --https --report /out/smoke.json
 cd /out/build/source/t
 for suite in t241[0-7]-*.sh; do ./$suite; done
+PATH="/out/relocated runtime/bin:$PATH" GIT_TEST_REQUIRE_PREREQ='GIT_LFS_FILE_TRANSPORT SHA256SUM' \
+  ./t2419-reflink-lfs.sh

@@ -228,8 +228,9 @@ class MacOSCleanupTests(unittest.TestCase):
         root = Path(temp.name).resolve()
         source, out = root / 'source', root / 'output'
         (source / 't').mkdir(parents=True)
-        names = [f't241{i}-fixture.sh' for i in range(6)] + [
-            't2416-worktree-reflink.sh', 't2417-apfs-metadata.sh']
+        ordinary = [f't241{i}-fixture.sh' for i in range(6)] + ['t2419-reflink-lfs.sh']
+        strict = ['t2416-worktree-reflink.sh', 't2417-apfs-metadata.sh']
+        names = ordinary + strict
         for name in names:
             (source / 't' / name).touch()
 
@@ -237,7 +238,10 @@ class MacOSCleanupTests(unittest.TestCase):
             if args[:2] == ['hdiutil', 'create']:
                 args[-1].write_bytes(b'owned image')
 
-        argv = ['test-macos.py', '--arch', 'arm64', '--source', str(source),
+        lfs_bin = root / 'bin'
+        lfs_bin.mkdir()
+        (lfs_bin / 'git-lfs').touch()
+        argv = ['test-macos.py', '--arch', 'arm64', '--source', str(source), '--lfs-bin', str(lfs_bin),
                 '--output', str(out)]
         mount = f'/dev/owned on {out}/metadata-volume (apfs, noatime)\n'
         with patch('sys.argv', argv), patch('sys.stdout', io.StringIO()), \
@@ -245,21 +249,26 @@ class MacOSCleanupTests(unittest.TestCase):
                 patch.object(self.macos.subprocess, 'check_output',
                              side_effect=['git build options', mount]), \
                 patch.object(self.macos, 'read_probe', return_value={'atime_changed': False}), \
-                patch.object(self.macos, 'suite', side_effect=[1, 0, 0, 0, 0, 0, 0, 0]) as suite, \
+                patch.object(self.macos, 'suite', side_effect=[1, 0, 0, 0, 0, 0, 0, 0, 0]) as suite, \
                 patch.object(self.macos, 'detach_volume') as detach:
             self.assertEqual(self.macos.main(), 1)
-        self.assertEqual(suite.call_count, 8)
-        self.assertEqual([c.args[2] for c in suite.call_args_list[:6]], [source / 't'] * 6)
+        self.assertEqual(suite.call_count, 9)
+        self.assertEqual([c.args[2] for c in suite.call_args_list[:7]], [source / 't'] * 7)
+        lfs_call = suite.call_args_list[6]
+        self.assertEqual(lfs_call.args[3], 't2419-reflink-lfs.sh')
+        self.assertTrue(lfs_call.kwargs['env']['PATH'].startswith(str(lfs_bin) + ':'))
+        self.assertEqual(lfs_call.kwargs['env']['GIT_TEST_REQUIRE_PREREQ'], 'GIT_LFS_FILE_TRANSPORT SHA256SUM')
         self.assertEqual([c.args[2] for c in suite.call_args_list[-2:]],
                          [out / 'metadata-volume'] * 2)
         self.assertEqual(suite.call_args_list[-1].args[3], 't2417-apfs-metadata.sh')
         oracle_path = suite.call_args_list[-1].kwargs['env']['PATH'].split(':')[0]
+        self.assertEqual(suite.call_args_list[-2].kwargs['env']['PATH'].split(':')[0], oracle_path)
         self.assertEqual(Path(oracle_path), out / 'interposer-compiler')
         self.assertIn('clang -arch arm64 -arch x86_64 "$@"',
                       (Path(oracle_path) / 'cc').read_text())
         conditions = json.loads((out / 'conditions.json').read_text())
-        self.assertEqual(conditions['strict_metadata_suites'], names[-2:])
-        self.assertEqual(conditions['ordinary_volume_suites'], names[:6])
+        self.assertEqual(conditions['strict_metadata_suites'], strict)
+        self.assertEqual(conditions['ordinary_volume_suites'], ordinary)
         detach.assert_called_once_with(out / 'metadata-volume')
         self.assertFalse((out / 'metadata.sparseimage').exists())
 

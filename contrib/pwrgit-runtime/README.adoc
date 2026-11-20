@@ -67,6 +67,22 @@ attempt metadata copying, so an apply can still skip an estimated candidate.
 The system-config and Linux CA corrections in `.3` remain in `.4`.
 The isolated contribution branches and earlier immutable releases are retained.
 
+`2.56.1-dev-pwrgit.1` starts a new downstream series on upstream Git
+`v2.56.1`. It replays the shipped reflink stack (PRs #2, #3, #5, #10 and
+#11), the verified LFS backport (PR #31), and default verified reflinks
+with sampled repair after branch checkout and switch (PR #32). The build
+lock records both the upstream release commit and the frozen downstream
+source. The version keeps the `-dev-pwrgit` channel spelling used by both
+app consumers.
+
+Git LFS was already bundled. The change allows ordinary Git checkout,
+switch, hard reset, merge, rebase and pull to share LFS checkout bytes:
+Git runs the normal filter and compares the resulting bytes with a clone
+of the donor before publishing it. Direct writes by `git lfs checkout`
+or `git lfs pull` can be shared afterward through worktree re-sharing.
+The bundled system config sets no `checkout.reflink` value. Set
+`checkout.reflink=false` to opt out of the new default.
+
 == Fork branches and upstream submissions
 
 `master` tracks upstream Git. `pwrgit` is this fork's default release branch
@@ -135,7 +151,7 @@ relocation, the baseline ABI, ordinary fallback, HTTPS with the bundled CA
 file and Dugite environment, and actual XFS/btrfs sharing.
 Windows is intentionally excluded from this release at the user's request.
 
-macOS package smoke checks and source suites t2410--t2415 run on the runner's
+macOS package smoke checks and source suites t2410--t2415 and t2419 run on the runner's
 ordinary APFS volume. These suites include their own APFS/HFS+ test images;
 their original root avoids nesting those images inside another test image.
 Suites t2416 and t2417 run on a private APFS image mounted with `noatime`, verified by
@@ -149,6 +165,12 @@ also retains an ordinary-volume reproduction of already-shared and
 hardlink/sparse cases,
 with a bounded filesystem reader trace. Both conditions and their results
 are uploaded even when a suite fails.
+
+All release platforms run t2419 with the packaged Git LFS executable. Its
+file transport and SHA-256 prerequisites are required. The Linux runner also
+runs it on the mounted XFS and Btrfs images to verify actual sharing. The Btrfs
+test image uses `max_inline=0` so that Git LFS pointers have data extents the
+tests can compare.
 
 The macOS 26 ordinary-volume failure changed only atime in nine cases. A
 `noatime` suite pass does not establish an unchanged-atime guarantee on an
@@ -221,10 +243,10 @@ The content-asserting smoke tests cover workers 1/8, Git LFS smudge/pointers,
 external filters, CRLF conversion, sparse checkout, submodules, actual
 block sharing, ordinary disabled fallback, no-op preservation, dirty donor
 fallback, independent writes, helper discovery, templates and real HTTPS.
-The focused source suites are `t2410` through `t2414`.
+The focused source suites are `t2410` through `t2417` plus `t2419`.
 
-This source follows Git's ordinary index/stat trust. Known APFS writable-mmap
-edits can remain hidden from those checks and can be imported from a donor.
-Passing these cases does not prove equality for arbitrary hidden edits or
-concurrent writers. Packaging adds no mandatory readback or hashing to Git
-checkout. Its archive/inventory hashing verifies the shipped runtime itself.
+The verified checkout path compares each cloned snapshot against ordinary
+recipient output, including when donor index stat checks look clean. The
+existing re-sharing operation still follows the APFS replacement constraints
+documented above. Archive and inventory hashing verify the shipped runtime
+independently of the source's checkout checks.

@@ -89,12 +89,16 @@ def detach_volume(volume):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source', type=Path, required=True)
+    p.add_argument('--lfs-bin', type=Path, required=True, help='Bin directory containing the packaged Git LFS')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--arch', choices=['arm64', 'x64'], required=True)
     a = p.parse_args()
     source, out = a.source.resolve(), a.output.resolve()
-    suites = sorted((source / 't').glob('t241[0-7]-*.sh'))
-    assert len(suites) == 8, 'Expected all eight focused source suites'
+    suites = sorted((source / 't').glob('t241[0-79]-*.sh'))
+    assert len(suites) == 9, 'Expected all nine focused source suites'
+    assert (a.lfs_bin / 'git-lfs').is_file(), 'Packaged Git LFS is missing'
+    lfs_env = dict(os.environ, PATH=str(a.lfs_bin.resolve()) + os.pathsep + os.environ['PATH'],
+                   GIT_TEST_REQUIRE_PREREQ='GIT_LFS_FILE_TRANSPORT SHA256SUM')
     strict = [path for path in suites if path.name.startswith(('t2416-', 't2417-'))]
     ordinary = [path for path in suites if path not in strict]
     out.mkdir(parents=True)
@@ -111,7 +115,9 @@ def main():
     # Preserve the original root for suites which create their own disk images.
     # Nesting their HFS+ image inside our metadata image can prevent detachment.
     for path in ordinary:
-        report['suites'][path.name] = suite(source, arch, source / 't', path.name)
+        report['suites'][path.name] = suite(
+            source, arch, source / 't', path.name,
+            env=lfs_env if path.name.startswith('t2419-') else None)
 
     # Preserve evidence from the original environment, including already-shared
     # and hardlink skips. This diagnostic is not the strict regression gate.
@@ -172,9 +178,7 @@ def main():
         oracle_env = dict(os.environ, PATH=str(compiler) + os.pathsep + os.environ['PATH'])
         report['interposer_architectures'] = ['arm64', 'x86_64']
         for path in strict:
-            report['suites'][path.name] = suite(
-                source, arch, volume, path.name,
-                env=oracle_env if path.name.startswith('t2417-') else None)
+            report['suites'][path.name] = suite(source, arch, volume, path.name, env=oracle_env)
     finally:
         (out / 'conditions.json').write_text(json.dumps(report, indent=2) + '\n')
         if attached:

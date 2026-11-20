@@ -39,6 +39,10 @@ if run(['git', 'rev-parse', revision], cwd=repo) != revision:
 source_ref = lock['source']['ref']
 if run(['git', 'rev-parse', '--verify', source_ref + '^{commit}'], cwd=repo) != revision:
     raise ValueError('Frozen source ref does not match the exact pinned commit')
+upstream_base = lock['source']['upstream_base']
+if run(['git', 'rev-parse', upstream_base['revision'] + '^{commit}'], cwd=repo) != upstream_base['revision']:
+    raise ValueError('Upstream base must be a full immutable commit SHA')
+run(['git', 'merge-base', '--is-ancestor', upstream_base['revision'], revision], cwd=repo)
 archive = out / 'git-source.tar.gz'
 env = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'DYLD_', 'LD_'))}
 for name in ('MAKEFLAGS', 'MFLAGS', 'CFLAGS', 'CPPFLAGS', 'LDFLAGS', 'CC', 'CXX', 'AR', 'RANLIB',
@@ -140,6 +144,7 @@ if host == 'linux':
                       'MPL-2.0 license and source notice: LICENSE.ca-bundle and NOTICE.ca-bundle.\n')
 manifest = dict(schema=1, version=lock['version'], source_revision=revision,
                 source_ref=source_ref,
+                upstream_base=upstream_base,
                 source_pull_requests=lock['source']['pull_requests'],
                 recipe_files={p.name: sha256(p) for p in sorted(HERE.iterdir()) if p.is_file()},
                 recipe_revision=run(['git', 'rev-parse', 'HEAD'], cwd=repo),
