@@ -10,6 +10,7 @@ reflink series (https://github.com/huntharo/git/pull/1).
 
 This alternative removes the unconditional readback and blob hash of every
 clone. It does not replace that readback with unconditional byte comparison.
+Only candidates requiring CRLF output are compared, as described below.
 Object creation, object reading and Git's existing integrity checks retain
 their normal hash implementations, including collision detection.
 
@@ -63,10 +64,10 @@ The source index itself is never written.
 A donor needs a stage-zero regular entry with the requested blob ID, without
 skip-worktree, intent-to-add or remove flags. Empty files are created
 normally. The source must be on the recipient's filesystem and support the
-clone primitive. Conversion eligibility still uses
-`convert_to_working_tree_is_noop_ca()` in the recipient, so filters,
-working-tree encodings, ident expansion and CRLF output use the normal
-writer. LFS is a filter and follows that path.
+clone primitive. Recipient filters, working-tree encodings and ident
+expansion use the normal writer. LFS is a filter and follows that path.
+EOL-only conversions may share an already converted donor, after comparison
+with the recipient's ordinary checkout output.
 
 A clean source index does not establish that its working-tree bytes equal
 the blob: its attributes or worktree config may differ. The source's
@@ -76,8 +77,9 @@ source clean/smudge/process drivers and source encodings decline cloning.
 An unconfigured filter attribute remains eligible. Fsmonitor is disabled
 for this attribute query; it must not execute a donor's fsmonitor hook.
 The source file's full size must equal the blob size from the object
-metadata; this rejects expanded ident and CRLF donors without reading their
-contents. Lookup errors decline cloning. This source-context lookup is
+metadata on the unconverted fast path; this rejects expanded ident and
+CRLF donors without reading their contents. EOL-output candidates instead
+compare the cloned bytes with the recipient conversion. Lookup errors decline cloning. This source-context lookup is
 conversion eligibility, not a second unchanged-file implementation.
 
 The donor is opened O_RDONLY | O_NOFOLLOW | O_NONBLOCK. Its actual fstat
@@ -100,8 +102,48 @@ with a symlink, directory or FIFO cannot redirect it. After cloning, fstat
 of that same descriptor is checked again with the same index mechanism.
 A visible concurrent edit discards the clone and invokes the ordinary
 writer. The existing `verify-failed` Trace2 counter now counts this stat
-recheck failure, not a failed content hash. Fresh destination metadata is
+recheck failure or a checkout-output mismatch, not a failed content hash.
+Fresh destination metadata is
 then recorded by checkout's unchanged update path.
+
+EOL output equivalence
+----------------------
+
+The index does not store a file's physical line-ending representation or
+historical conversion context. A committed attributes-only change from
+`text eol=lf` to `text eol=crlf`, followed by aging and ordinary refresh,
+can leave the same clean LF donor under the same current attributes as a
+fresh CRLF checkout. Ordinary reset/restore of an existing clean destination
+can preserve that old representation too. Those operations are not a byte
+oracle for fresh creation. Source and recipient settings may also differ.
+
+For recipient EOL-only CRLF output, the clone is compared with the output
+of the ordinary recipient converter. `get_stream_filter_ca()` streams
+explicit EOL conversion with bounded buffers. `convert_to_working_tree_ca()`
+handles auto rules in core, including binary detection and mixed endings,
+exactly as the ordinary writer does. The comparison reads the new clone,
+so a donor change between comparison and cloning cannot invalidate it.
+The normal descriptor stat recheck still applies. A mismatch or read error
+discards the clone and uses the ordinary writer.
+
+Only this ambiguous representation takes a content comparison. No-op
+recipients retain the previous size/stat fast path without readback or
+conversion. The comparison does not implement another clean/refresh cache,
+write the source index, fabricate metadata, replace hashes, or assume that
+matching filter names imply deterministic output. Recipient external and
+process filters (including required/delayed filters), ident and encodings
+remain on the ordinary writer; configured source filters and encodings
+remain conservatively ineligible.
+
+For a matched converted candidate, object reading and conversion replace
+the same work in the ordinary writer, and one additional clone read avoids
+the file-data write/allocation. Explicit conversions retain streaming;
+auto conversion retains the ordinary converter's in-core memory cost.
+A mismatch pays comparison work and then repeats conversion in the fallback
+writer. `output-compared` and `output-read-bytes` Trace2 counters expose
+comparison attempts and actual clone bytes read; they do not measure object
+inflation or bytes written by the fallback writer. No speed improvement is
+implied by avoiding writes. See the conversion measurement report.
 
 Limits of the stat model
 ------------------------
@@ -114,7 +156,9 @@ configurations and declining racy donors cover useful cases, but do not
 eliminate stat-invisible edits under otherwise normal settings.
 The cache also does not record historical conversion rules: current
 attribute/config eligibility cannot prove how existing donor bytes were
-produced if those rules have since changed.
+produced if those rules have since changed. The EOL-output comparison
+addresses that ambiguity only for candidates on that path; it does not
+strengthen the unconverted fast path to PR #1's verification guarantee.
 
 There is a material difference from ordinary *creation* of a worktree:
 ordinary creation reads the object database and never imports donor edits.
@@ -164,7 +208,11 @@ copies streamed from the object database when no real donor is eligible.
 The legacy value `corrupt` exercises discard-and-write fallback by forcing
 scratch clone rejection; it no longer claims to test a content verifier.
 GIT_TEST_REFLINK_TAMPER exercises visible concurrent source edits and
-pathname replacement. The test knob never bypasses recipient conversions.
+pathname replacement. The test knob never bypasses recipient conversions, and scratch donors
+are restricted to no-op recipients. `t2415-reflink-conversion.sh` adds
+fresh ordinary-checkout comparisons, actual block sharing, conversion
+context changes, auto detection and unsafe converted donors with one and
+eight workers.
 
 See the measurement report and benchmark script added with this draft for
 build flags, fixture commit, repeated contemporary controls, timing ranges,
