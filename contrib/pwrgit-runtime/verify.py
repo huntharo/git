@@ -32,17 +32,23 @@ ca_bundle = verify_ca_bundle(root, m)
 if ca_bundle:
     env['GIT_SSL_CAINFO'] = str(root / ca_bundle['path'])
 git = root / 'bin/git'
-assert run([git, '--version'], env=env) == 'git version ' + m['version']
+if run([git, '--version'], env=env) != 'git version ' + m['version']:
+    raise ValueError('Executable Git version differs from provenance')
 build_options = run([git, 'version', '--build-options'], env=env).splitlines()
 if 'SHA-1: SHA1_DC' not in build_options or 'built from commit: ' + m['source_revision'] not in build_options:
     raise ValueError('Executable source revision or primary SHA1_DC protection differs from provenance')
-assert run([git, '--exec-path'], env=env) == str(root / 'libexec/git-core')
-assert run([git, 'lfs', 'version'], env=env).startswith('git-lfs/' + m['lfs_version'] + ' ')
-assert run([git, 'config', '--system', '--no-includes', '--get-all', 'include.path'], env=env) == '/etc/gitconfig'
+if run([git, '--exec-path'], env=env) != str(root / 'libexec/git-core'):
+    raise ValueError('Git helpers did not relocate with the packaged executable')
+if not run([git, 'lfs', 'version'], env=env).startswith('git-lfs/' + m['lfs_version'] + ' '):
+    raise ValueError('Executable Git LFS version differs from provenance')
+if run([git, 'config', '--system', '--no-includes', '--get-all', 'include.path'], env=env) != '/etc/gitconfig':
+    raise ValueError('Packaged Git system configuration is missing the host config include')
 configuration = verify_configuration(git, root / 'etc/gitconfig', env)
-assert (root / 'share/git-core/templates/hooks').is_dir()
+if not (root / 'share/git-core/templates/hooks').is_dir():
+    raise ValueError('Missing packaged hook templates')
 for name in ['COPYING', 'LICENSE.git-lfs', 'SOURCES']:
-    assert (root / name).is_file(), name
+    if not (root / name).is_file():
+        raise ValueError(f'Missing packaged {name}')
 executables = {}
 for path in sorted(root.rglob('*')):
     if platform.system() == 'Linux' and path.is_file() and not path.is_symlink():
@@ -50,20 +56,25 @@ for path in sorted(root.rglob('*')):
             elf = stream.read(4) == b'\x7fELF'
         if elf:
             versions = {(int(x), int(y)) for x, y in re.findall(r'GLIBC_(\d+)\.(\d+)', run(['readelf', '--version-info', path]))}
-            assert not versions or max(versions) <= (2, 35), (path, versions)
+            if versions and max(versions) > (2, 35):
+                raise ValueError(f'{path} exceeds the glibc 2.35 baseline: {sorted(versions)}')
             deps = run(['ldd', path], env=env) if 'NEEDED' in run(['readelf', '-d', path]) else 'static'
-            assert 'not found' not in deps, (path, deps)
+            if 'not found' in deps:
+                raise ValueError(f'{path} has unresolvable libraries: {deps}')
             for name, target in ldd_dependencies(deps):
                 if not re.match(r'lib(c|m|dl|rt|pthread|resolv|util|anl)\.so\.', name):
-                    assert Path(target).resolve().is_relative_to(root), (path, name, target)
+                    if not Path(target).resolve().is_relative_to(root):
+                        raise ValueError(f'{path} resolves {name} outside the package: {target}')
             executables[path.relative_to(root).as_posix()] = {'dependencies': deps, 'glibc_versions': sorted(versions)}
     if not is_macho(path):
         continue
     arches = run(['lipo', '-archs', path]).split()
     expected = {'arm64', 'x86_64'} if m['architecture'] == 'universal' else {'arm64' if m['architecture'] == 'arm64' else 'x86_64'}
-    assert set(arches) == expected, (path, arches)
+    if set(arches) != expected:
+        raise ValueError(f'{path} has unexpected Mach-O architectures: {arches}')
     deps = [x.strip() for x in run(['otool', '-L', path]).splitlines() if x.startswith('\t')]
-    assert all(x.strip().startswith(('/usr/lib/', '/System/Library/')) for x in deps), (path, deps)
+    if not all(x.startswith(('/usr/lib/', '/System/Library/')) for x in deps):
+        raise ValueError(f'{path} has unexpected Mach-O dependencies: {deps}')
     command = ['codesign', '--verify', '--all-architectures', '--strict']
     if a.require_signed:
         command += ['--test-requirement', '=anchor apple generic and certificate leaf[subject.OU] = "T44CNHC4UH"']
@@ -72,7 +83,8 @@ for path in sorted(root.rglob('*')):
 with tempfile.TemporaryDirectory(prefix='pwrgit-relocated-') as tmp:
     repo = Path(tmp) / 'repo'
     run([git, 'init', repo], env=env)
-    assert (repo / '.git/hooks/pre-commit.sample').is_file()
+    if not (repo / '.git/hooks/pre-commit.sample').is_file():
+        raise ValueError('Git init did not find the relocated hook templates')
     if platform.system() == 'Darwin':
         # The helper ignores unknown actions after parsing input. An empty get
         # can query the host keychain and prompt, so use a launch-only action.

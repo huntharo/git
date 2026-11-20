@@ -6,14 +6,15 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
-  readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
+  readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const teamRequirement = '=anchor apple generic and certificate leaf[subject.OU] = "T44CNHC4UH"';
+const runtimeDirectoryMode = 0o755;
 const hash = (data) => createHash("sha256").update(data).digest("hex");
 const checked = (command, args, options = {}) => {
   const r = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, windowsHide: true, ...options });
@@ -138,7 +139,12 @@ export async function stageRuntime({ manifestPath, platform, arch, output, cache
   output = resolve(output);
   const pin = readRuntimeManifest(manifestPath, platform, arch);
   if (existsSync(output)) {
-    try { verifyRuntime(output, pin); return pin; } catch { /* Prepare a verified replacement. */ }
+    try {
+      if ((statSync(output).mode & 0o7777) === runtimeDirectoryMode) {
+        verifyRuntime(output, pin);
+        return pin;
+      }
+    } catch { /* Prepare a verified replacement. */ }
   }
   mkdirSync(cache, { recursive: true, mode: 0o700 });
   const archive = join(cache, `${pin.asset.sha256}.tar.gz`);
@@ -161,6 +167,8 @@ export async function stageRuntime({ manifestPath, platform, arch, output, cache
   mkdirSync(staging);
   try {
     checked("tar", ["-xpzf", archive, "-C", staging]);
+    // The archive contains the children, so extraction does not set this mode.
+    chmodSync(staging, runtimeDirectoryMode);
     verifyRuntime(staging, pin);
     try {
       renameSync(staging, output);

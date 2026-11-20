@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import shutil
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -24,14 +25,18 @@ class BuildResumeTests(unittest.TestCase):
             repo.mkdir()
             out.mkdir()
             subprocess.run(['git', 'init', '-q', repo], check=True)
-            (repo / 'source.c').write_text('original source\n')
-            subprocess.run(['git', '-C', repo, 'add', 'source.c'], check=True)
+            (repo / 'src').mkdir()
+            (repo / 'src/source.c').write_text('original source\n')
+            (repo / 'source-link').symlink_to('src/source.c')
+            subprocess.run(['git', '-C', repo, 'add', '.'], check=True)
             subprocess.run(['git', '-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
                             '-c', 'commit.gpgSign=false', 'commit', '-qm', 'Source'], check=True)
             revision = subprocess.check_output(['git', '-C', repo, 'rev-parse', 'HEAD'], text=True).strip()
             inputs = dict(source_revision=revision, platform='linux', architecture='x64')
             prepare_build_source(out, repo, inputs, False)
-            self.assertEqual((out / 'source/source.c').read_text(), 'original source\n')
+            source_file = out / 'source/src/source.c'
+            source_link = out / 'source/source-link'
+            self.assertEqual(source_file.read_text(), 'original source\n')
             files = [out / 'source/source.o', out / 'cached-download.zip']
             stale = [out / 'stage/pwrgit/lib', out / 'symbols', out / 'library-sources']
             for path in files:
@@ -45,12 +50,88 @@ class BuildResumeTests(unittest.TestCase):
             self.assertTrue(all(path.read_bytes() == b'keep' for path in files))
             self.assertTrue(all(not path.exists() for path in stale))
 
+            source_file.write_text('modified source\n')
+            with self.assertRaisesRegex(ValueError, r'src/source\.c.*fresh --output'):
+                prepare_build_source(out, repo, inputs, True)
+            source_file.write_text('original source\n')
+            source_file.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, r'src/source\.c.*fresh --output'):
+                prepare_build_source(out, repo, inputs, True)
+            source_file.chmod(0o644)
+            source_link.unlink()
+            source_link.symlink_to('source.o')
+            with self.assertRaisesRegex(ValueError, 'source-link.*fresh --output'):
+                prepare_build_source(out, repo, inputs, True)
+            source_link.unlink()
+            source_link.symlink_to('src/source.c')
+            source_file.unlink()
+            with self.assertRaisesRegex(ValueError, r'src/source\.c.*fresh --output'):
+                prepare_build_source(out, repo, inputs, True)
+
             (out / 'git-source.tar.gz').write_bytes(b'wrong source')
             with self.assertRaisesRegex(ValueError, 'source archive changed'):
                 prepare_build_source(out, repo, inputs, True)
             (out / 'build-inputs.json').unlink()
             with self.assertRaisesRegex(ValueError, 'Cannot establish build provenance'):
                 prepare_build_source(out, repo, inputs, True)
+
+
+class UniversalRecipeTests(unittest.TestCase):
+    def test_recipes_must_match_before_merging(self):
+        manifest = dict(
+            version='2.56.1-dev-pwrgit.2', source_revision='a' * 40, source_ref='fixture',
+            upstream_base={}, source_pull_requests=[], primary_sha1='SHA1_DC',
+            source_archive_sha256='b' * 64, minimum_os='13.0', lfs_version='3.7.1',
+            recipe_revision='c' * 40, recipe_files={'build.py': 'd' * 64},
+            platform='darwin', signing='ad-hoc',
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for arch in ('arm64', 'x64'):
+                (root / arch).mkdir()
+                (root / arch / 'SOURCES').write_text(arch)
+            command = [sys.executable, Path(__file__).with_name('universal.py'),
+                       '--arm64', root / 'arm64', '--x64', root / 'x64']
+            for field, different in (('recipe_revision', 'e' * 40), ('recipe_files', {}), (None, None)):
+                with self.subTest(field=field):
+                    output = root / (field or 'universal')
+                    for arch in ('arm64', 'x64'):
+                        metadata = dict(manifest, architecture=arch)
+                        if field and arch == 'x64':
+                            metadata[field] = different
+                        (root / arch / 'pwrgit-build.json').write_text(json.dumps(metadata))
+                        seal(root / arch)
+                    result = subprocess.run([*command, '--output', output], capture_output=True, text=True)
+                    if field:
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertIn(f'Slice provenance differs: {field}', result.stderr)
+                        self.assertFalse(output.exists())
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        metadata = json.loads((output / 'pwrgit-build.json').read_text())
+                        self.assertEqual(metadata['recipe_revision'], manifest['recipe_revision'])
+                        self.assertEqual(metadata['recipe_files'], manifest['recipe_files'])
+
+
+class PayloadVerificationTests(unittest.TestCase):
+    def test_optimized_verifier_rejects_wrong_git_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'runtime'
+            git = root / 'bin/git'
+            git.parent.mkdir(parents=True)
+            git.write_text("#!/bin/sh\nprintf 'git version wrong\\n'\n")
+            git.chmod(0o755)
+            (root / 'pwrgit-build.json').write_text(json.dumps(dict(
+                source_revision='a' * 40, primary_sha1='SHA1_DC', version='2.56.1-dev-pwrgit.2',
+                platform='darwin',
+            )))
+            seal(root)
+            report = root.parent / 'report.json'
+            command = [sys.executable, '-O', Path(__file__).with_name('verify.py'), root, '--report', report]
+            result = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn('Executable Git version differs from provenance', result.stderr)
+            self.assertFalse(report.exists())
 
 
 class PublishReleaseTests(unittest.TestCase):

@@ -126,12 +126,15 @@ with tempfile.TemporaryDirectory(prefix='pwrgit-runtime-smoke-', dir=a.root) as 
                 require((wt / 'payload').stat().st_ino == repaired_inode,
                         'Re-share replaced an already shared payload')
             require(not g(wt, 'status', '--porcelain'), 'Worktree is dirty after re-share')
-        (src / 'payload').write_bytes(b'D' + data[1:])
+        dirty_data = bytes([data[0] ^ 1]) + data[1:]
+        (src / 'payload').write_bytes(dirty_data)
         dirty = base / 'dirty'
         g(src, 'worktree', 'add', '-q', '--detach', dirty)
         require((dirty / 'payload').read_bytes() == data, 'Checkout copied modified donor bytes')
-        require((src / 'payload').read_bytes() == b'D' + data[1:], 'Checkout modified donor bytes')
-        (wt / 'payload').write_bytes(b'W' + data[1:])
+        require((src / 'payload').read_bytes() == dirty_data, 'Checkout modified donor bytes')
+        independent_data = bytes([data[0] ^ 2]) + data[1:]
+        (wt / 'payload').write_bytes(independent_data)
+        require((wt / 'payload').read_bytes() == independent_data, 'Independent write did not persist')
         require((dirty / 'payload').read_bytes() == data, 'A write in another worktree changed the payload')
         # A disabled clone exercises ordinary fallback, even on a reflink FS.
         fallback = base / 'fallback'

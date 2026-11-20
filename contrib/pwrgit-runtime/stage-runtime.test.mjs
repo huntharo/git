@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -77,6 +77,7 @@ test("stages a cached archive under umask 077 with its sealed modes intact", asy
   const metadata = join(root, "pwrgit-build.json");
   writeFileSync(metadata, JSON.stringify({ ...JSON.parse(readFileSync(metadata)), lfs_version: "3.7.1" }));
   mkdirSync(join(root, "bin"));
+  chmodSync(join(root, "bin"), 0o755);
   const git = join(root, "bin", "git");
   writeFileSync(git, `#!/bin/sh
 case "$*" in
@@ -96,7 +97,8 @@ esac
   const cache = join(temp, "explicit-cache");
   mkdirSync(cache);
   const archive = join(temp, "fixture.tar.gz");
-  execFileSync("tar", ["-czf", archive, "-C", root, "."]);
+  // runtime.py's package() archives the children without a root directory entry.
+  execFileSync("tar", ["-czf", archive, "-C", root, ...readdirSync(root)]);
   const digest = hash(readFileSync(archive));
   renameSync(archive, join(cache, `${digest}.tar.gz`));
 
@@ -115,6 +117,8 @@ esac
   } finally {
     process.umask(oldUmask);
   }
+  assert.equal(statSync(output).mode & 0o777, 0o755);
+  assert.equal(statSync(join(output, "bin")).mode & 0o777, 0o755);
   assert.equal(statSync(join(output, "pwrgit-build.json")).mode & 0o777, 0o644);
   assert.equal(statSync(join(output, "bin/git")).mode & 0o777, 0o755);
 
@@ -138,7 +142,7 @@ esac
   await t.test("atomically replaces a nonempty stage with a verified directory",
     { skip: !["darwin", "linux"].includes(process.platform) }, async () => {
       const inode = statSync(output).ino;
-      writeFileSync(join(output, "stale"), "stale");
+      chmodSync(output, 0o700);
 
       // Simulate a filesystem without exchange support at the publish boundary.
       const shim = join(temp, "no-exchange");
@@ -160,6 +164,7 @@ exit 1
 
       const pin = await stageRuntime({ manifestPath, platform: "linux", arch: "x64", output, cache });
       assert.notEqual(statSync(output).ino, inode);
+      assert.equal(statSync(output).mode & 0o777, 0o755);
       assert.equal(verifyRuntimeRaw(output, pin).version, version);
     });
 });

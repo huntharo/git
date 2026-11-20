@@ -88,17 +88,44 @@ def extract(archive, destination):
         tar.extractall(destination, filter=data_filter)
 
 
+def verify_build_source(archive, source):
+    with tarfile.open(archive) as tar:
+        # git archive lists each directory before its children. Check those
+        # directories too so a replaced parent symlink cannot pass validation.
+        for member in tar:
+            path = source / member.name
+            try:
+                mode = path.lstat().st_mode
+                if member.isdir():
+                    matches = stat.S_ISDIR(mode)
+                elif member.issym():
+                    matches = stat.S_ISLNK(mode) and os.readlink(path) == member.linkname
+                elif member.isfile():
+                    # Git tracks the executable bit, not the full Unix mode.
+                    matches = stat.S_ISREG(mode) and not ((mode ^ member.mode) & stat.S_IXUSR)
+                    if matches:
+                        with tar.extractfile(member) as archived:
+                            matches = path.read_bytes() == archived.read()
+                else:
+                    matches = False
+            except OSError:
+                matches = False
+            if not matches:
+                raise ValueError(f'Extracted source differs at {member.name}; use a fresh --output directory')
+
+
 def prepare_build_source(out, repo, inputs, resume):
     source = out / 'source'
     archive = out / 'git-source.tar.gz'
     stamp = out / 'build-inputs.json'
-    if source.exists() or stamp.exists():
-        if not resume or not source.is_dir() or not stamp.is_file():
+    if source.exists() or source.is_symlink() or stamp.exists():
+        if not resume or source.is_symlink() or not source.is_dir() or not stamp.is_file():
             raise ValueError('Cannot establish build provenance; use a fresh --output directory')
         previous = json.loads(stamp.read_text())
         if (previous['inputs'] != inputs or not archive.is_file()
                 or previous['source_archive_sha256'] != sha256(archive)):
             raise ValueError('Build inputs or source archive changed; use a fresh --output directory')
+        verify_build_source(archive, source)
     else:
         source.mkdir()
         with archive.open('wb') as stream:

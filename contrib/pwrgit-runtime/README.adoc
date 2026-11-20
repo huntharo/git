@@ -144,9 +144,10 @@ python3 contrib/pwrgit-runtime/smoke.py /tmp/git-universal \
 ----
 
 `build.py --resume` reuses a trusted build directory only when its recorded
-inputs and source archive match. Use a fresh output for a different source or
-an older build without a provenance record. Resume rebuilds the installed
-staging tree, symbols and Linux library-source staging from scratch.
+inputs, source archive and extracted archive entries match. Use a fresh
+output if the source was edited or the build has no provenance record.
+Resume rebuilds the installed staging tree, symbols and Linux library-source
+staging from scratch.
 
 The CI workflow builds Linux x64/ARM64 in a digest-pinned Ubuntu 22.04
 container against an immutable Ubuntu archive snapshot. It bundles
@@ -242,7 +243,8 @@ merging and signing. No broad signing exclusion is permitted.
 `stage-runtime.mjs` is the shared consumer implementation. A checked-in
 manifest pins the release URL, archive SHA256, source SHA, inventory SHA256
 and signing state. Downloads are verified before extraction, cached by
-digest, and staged atomically. A valid cached archive works offline. A failed
+digest, and staged atomically with a `0755` runtime root. A valid cached
+archive works offline. A failed
 download, checksum, signature or inventory check is fatal; it cannot select
 system Git or an upstream Dugite archive. Replacing a nonempty stage needs
 Python 3 and a filesystem that supports native directory exchange on macOS
