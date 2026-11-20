@@ -637,6 +637,20 @@ test_expect_success 'ref iterator: missing object IDs are not flagged' '
 	)
 '
 
+test_expect_success 'ref iterator: missing table causes failure' '
+	test_when_finished "rm -rf repo" &&
+	git init repo &&
+	(
+		cd repo &&
+		test_commit file &&
+		git branch side &&
+		rm .git/reftable/*.ref &&
+		test_must_fail git for-each-ref >out 2>err &&
+		test_must_be_empty out &&
+		test_grep "unable to iterate over references" err
+	)
+'
+
 test_expect_success 'basic: commit and list refs' '
 	test_when_finished "rm -rf repo" &&
 	git init repo &&
