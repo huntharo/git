@@ -83,6 +83,12 @@ or `git lfs pull` can be shared afterward through worktree re-sharing.
 The bundled system config sets no `checkout.reflink` value. Set
 `checkout.reflink=false` to opt out of the new default.
 
+`2.56.1-dev-pwrgit.2` adds opt-in clean-filter verification to manual
+worktree re-sharing (PR #35). Use `git worktree reflink --verify-filters`
+to check stat-ambiguous filtered paths with matching donor bytes. Git
+uses the target's clean conversion, which can update the LFS cache.
+Default, automatic, and dry-run maintenance keep their filter-free policy.
+
 == Fork branches and upstream submissions
 
 `master` tracks upstream Git. `pwrgit` is this fork's default release branch
